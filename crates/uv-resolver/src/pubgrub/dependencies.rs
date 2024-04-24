@@ -5,7 +5,8 @@ use tracing::warn;
 
 use distribution_types::Verbatim;
 use pep440_rs::Version;
-use pep508_rs::{MarkerEnvironment, Requirement, VersionOrUrl};
+use pep508_rs::{MarkerEnvironment, VersionOrUrl};
+use requirements_txt::Requirement;
 use uv_configuration::{Constraints, Overrides};
 use uv_normalize::{ExtraName, PackageName};
 

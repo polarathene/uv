@@ -11,8 +11,9 @@ use chrono::{DateTime, Utc};
 use once_cell::sync::Lazy;
 
 use distribution_types::{IndexLocations, Resolution, SourceDist};
-use pep508_rs::{MarkerEnvironment, Requirement, StringVersion};
+use pep508_rs::{MarkerEnvironment, StringVersion};
 use platform_tags::{Arch, Os, Platform, Tags};
+use requirements_txt::Requirement;
 use uv_cache::Cache;
 use uv_client::RegistryClientBuilder;
 use uv_configuration::{BuildKind, Constraints, NoBinary, NoBuild, Overrides, SetupPyStrategy};

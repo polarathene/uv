@@ -3,8 +3,9 @@ use std::hash::BuildHasherDefault;
 use itertools::Either;
 use rustc_hash::FxHashMap;
 
-use pep508_rs::Requirement;
 use uv_normalize::PackageName;
+
+use crate::Requirement;
 
 /// A set of overrides for a set of requirements.
 #[derive(Debug, Default, Clone)]

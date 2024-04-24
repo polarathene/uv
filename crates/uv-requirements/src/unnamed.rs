@@ -13,9 +13,9 @@ use distribution_types::{
     BuildableSource, DirectSourceUrl, GitSourceUrl, PathSourceUrl, RemoteSource, SourceUrl,
     VersionId,
 };
-use pep508_rs::{Requirement, Scheme, UnnamedRequirement, VersionOrUrl};
+use pep508_rs::{Scheme, UnnamedRequirement, VersionOrUrl};
 use pypi_types::Metadata10;
-use requirements_txt::{RequirementEntry, RequirementsTxtRequirement};
+use requirements_txt::{Requirement, RequirementEntry, RequirementsTxtRequirement};
 use uv_client::RegistryClient;
 use uv_distribution::{DistributionDatabase, Reporter};
 use uv_normalize::PackageName;

@@ -1,7 +1,9 @@
-use distribution_types::LocalEditable;
 use either::Either;
-use pep508_rs::{MarkerEnvironment, Requirement};
+
+use distribution_types::LocalEditable;
+use pep508_rs::MarkerEnvironment;
 use pypi_types::Metadata23;
+use requirements_txt::Requirement;
 use uv_configuration::{Constraints, Overrides};
 use uv_normalize::PackageName;
 use uv_types::RequestedRequirements;

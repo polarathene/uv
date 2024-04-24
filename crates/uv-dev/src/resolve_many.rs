@@ -10,9 +10,9 @@ use tokio::time::Instant;
 use tracing::{info, info_span, Span};
 use tracing_indicatif::span_ext::IndicatifSpanExt;
 
-use distribution_types::IndexLocations;
+use distribution_types::{IndexLocations, Requirement};
 use pep440_rs::{Version, VersionSpecifier, VersionSpecifiers};
-use pep508_rs::{Requirement, VersionOrUrl};
+use pep508_rs::VersionOrUrl;
 use uv_cache::{Cache, CacheArgs};
 use uv_client::{OwnedArchive, RegistryClient, RegistryClientBuilder};
 use uv_configuration::{ConfigSettings, NoBinary, NoBuild, SetupPyStrategy};

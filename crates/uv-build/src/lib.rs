@@ -25,9 +25,9 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 use tracing::{debug, info_span, instrument, Instrument};
 
-use distribution_types::Resolution;
+use distribution_types::{Requirement, Resolution};
 use pep440_rs::Version;
-use pep508_rs::{PackageName, Requirement};
+use pep508_rs::PackageName;
 use uv_configuration::{BuildKind, ConfigSettings, SetupPyStrategy};
 use uv_fs::{PythonExt, Simplified};
 use uv_interpreter::{Interpreter, PythonEnvironment};

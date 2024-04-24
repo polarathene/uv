@@ -22,9 +22,10 @@ use distribution_types::{
 };
 pub(crate) use locals::Locals;
 use pep440_rs::{Version, MIN_VERSION};
-use pep508_rs::{MarkerEnvironment, Requirement};
+use pep508_rs::MarkerEnvironment;
 use platform_tags::Tags;
 use pypi_types::Metadata23;
+use requirements_txt::Requirement;
 pub(crate) use urls::Urls;
 use uv_client::RegistryClient;
 use uv_configuration::{Constraints, Overrides};

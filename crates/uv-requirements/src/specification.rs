@@ -6,9 +6,9 @@ use tracing::instrument;
 
 use cache_key::CanonicalUrl;
 use distribution_types::{FlatIndexLocation, IndexUrl};
-use pep508_rs::Requirement;
 use requirements_txt::{
-    EditableRequirement, FindLink, RequirementEntry, RequirementsTxt, RequirementsTxtRequirement,
+    EditableRequirement, FindLink, Requirement, RequirementEntry, RequirementsTxt,
+    RequirementsTxtRequirement,
 };
 use uv_client::BaseClientBuilder;
 use uv_configuration::{NoBinary, NoBuild};

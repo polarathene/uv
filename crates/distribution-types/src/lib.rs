@@ -41,7 +41,7 @@ use url::Url;
 
 use distribution_filename::{DistFilename, SourceDistFilename, WheelFilename};
 use pep440_rs::Version;
-use pep508_rs::{Scheme, VerbatimUrl};
+use pep508_rs::{Pep508Error, Pep508Url, Scheme, VerbatimUrl};
 use uv_normalize::PackageName;
 
 pub use crate::any::*;
@@ -60,6 +60,10 @@ pub use crate::resolution::*;
 pub use crate::resolved::*;
 pub use crate::traits::*;
 
+// Avoid cyclical dependency with requirements.txt
+pub type Requirement = pep508_rs::Requirement<VerbatimUrl>;
+pub type RequirementError = Pep508Error<VerbatimUrl>;
+
 mod any;
 mod buildable;
 mod cached;
@@ -77,11 +81,11 @@ mod resolved;
 mod traits;
 
 #[derive(Debug, Clone)]
-pub enum VersionOrUrl<'a> {
+pub enum VersionOrUrl<'a, T: Pep508Url = VerbatimUrl> {
     /// A PEP 440 version specifier, used to identify a distribution in a registry.
     Version(&'a Version),
     /// A URL, used to identify a distribution at an arbitrary location.
-    Url(&'a VerbatimUrl),
+    Url(&'a T),
 }
 
 impl Verbatim for VersionOrUrl<'_> {
@@ -467,7 +471,7 @@ impl SourceDist {
         }
     }
 
-    /// Returns the path to the source distribution, if if it's a local distribution.
+    /// Returns the path to the source distribution, if it's a local distribution.
     pub fn as_path(&self) -> Option<&Path> {
         match self {
             Self::Path(dist) => Some(&dist.path),

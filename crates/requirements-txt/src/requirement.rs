@@ -1,12 +1,16 @@
-use pep508_rs::{
-    MarkerEnvironment, MarkerTree, Pep508Error, Pep508ErrorSource, Requirement, UnnamedRequirement,
-    VersionOrUrl, VersionOrUrlRef,
-};
-use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 use std::path::Path;
 use std::str::FromStr;
+
+use serde::{Deserialize, Serialize};
+
+use pep508_rs::{
+    MarkerEnvironment, MarkerTree, Pep508Error, Pep508ErrorSource, UnnamedRequirement, VerbatimUrl,
+    VersionOrUrl, VersionOrUrlRef,
+};
 use uv_normalize::ExtraName;
+
+use crate::Requirement;
 
 /// A requirement specifier in a `requirements.txt` file.
 #[derive(Hash, Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -52,7 +56,7 @@ impl RequirementsTxtRequirement {
     }
 
     /// Return the version specifier or URL for the requirement.
-    pub fn version_or_url(&self) -> Option<VersionOrUrlRef> {
+    pub fn version_or_url(&self) -> Option<VersionOrUrlRef<VerbatimUrl>> {
         match self {
             Self::Pep508(requirement) => match requirement.version_or_url.as_ref() {
                 Some(VersionOrUrl::VersionSpecifier(specifiers)) => {
@@ -79,7 +83,7 @@ impl From<UnnamedRequirement> for RequirementsTxtRequirement {
 }
 
 impl FromStr for RequirementsTxtRequirement {
-    type Err = Pep508Error;
+    type Err = Pep508Error<VerbatimUrl>;
 
     /// Parse a requirement as seen in a `requirements.txt` file.
     fn from_str(input: &str) -> Result<Self, Self::Err> {
@@ -97,7 +101,10 @@ impl FromStr for RequirementsTxtRequirement {
 
 impl RequirementsTxtRequirement {
     /// Parse a requirement as seen in a `requirements.txt` file.
-    pub fn parse(input: &str, working_dir: impl AsRef<Path>) -> Result<Self, Pep508Error> {
+    pub fn parse(
+        input: &str,
+        working_dir: impl AsRef<Path>,
+    ) -> Result<Self, Pep508Error<VerbatimUrl>> {
         // Attempt to parse as a PEP 508-compliant requirement.
         match Requirement::parse(input, &working_dir) {
             Ok(requirement) => Ok(Self::Pep508(requirement)),

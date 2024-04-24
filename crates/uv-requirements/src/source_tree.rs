@@ -6,7 +6,7 @@ use futures::{StreamExt, TryStreamExt};
 use url::Url;
 
 use distribution_types::{BuildableSource, HashPolicy, PathSourceUrl, SourceUrl, VersionId};
-use pep508_rs::Requirement;
+use requirements_txt::Requirement;
 use uv_client::RegistryClient;
 use uv_distribution::{DistributionDatabase, Reporter};
 use uv_fs::Simplified;

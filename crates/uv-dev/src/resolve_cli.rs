@@ -3,14 +3,12 @@ use std::path::PathBuf;
 
 use anstream::println;
 use anyhow::{Context, Result};
-
 use clap::{Parser, ValueEnum};
 use fs_err::File;
 use itertools::Itertools;
 use petgraph::dot::{Config as DotConfig, Dot};
 
-use distribution_types::{FlatIndexLocation, IndexLocations, IndexUrl, Resolution};
-use pep508_rs::Requirement;
+use distribution_types::{FlatIndexLocation, IndexLocations, IndexUrl, Requirement, Resolution};
 use uv_cache::{Cache, CacheArgs};
 use uv_client::{FlatIndexClient, RegistryClientBuilder};
 use uv_configuration::{ConfigSettings, NoBinary, NoBuild, SetupPyStrategy};

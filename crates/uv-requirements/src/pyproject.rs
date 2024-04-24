@@ -1,10 +1,12 @@
+use std::str::FromStr;
+
 use indexmap::IndexMap;
 use rustc_hash::FxHashSet;
 use serde::{Deserialize, Serialize};
-use std::str::FromStr;
 
-use pep508_rs::Requirement;
+use pep508_rs::{Pep508Error, VerbatimUrl};
 use pypi_types::LenientRequirement;
+use requirements_txt::Requirement;
 use uv_normalize::{ExtraName, PackageName};
 
 use crate::ExtrasSpecification;
@@ -51,7 +53,7 @@ pub(crate) struct Pep621Metadata {
 #[derive(thiserror::Error, Debug)]
 pub(crate) enum Pep621Error {
     #[error(transparent)]
-    Pep508(#[from] pep508_rs::Pep508Error),
+    Pep508(#[from] Pep508Error<VerbatimUrl>),
 }
 
 impl Pep621Metadata {

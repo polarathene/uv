@@ -9,8 +9,10 @@ use url::Url;
 
 use distribution_types::{InstalledDist, InstalledMetadata, InstalledVersion, Name};
 use pep440_rs::{Version, VersionSpecifiers};
-use pep508_rs::{Requirement, VerbatimUrl};
-use requirements_txt::{EditableRequirement, RequirementEntry, RequirementsTxtRequirement};
+use pep508_rs::VerbatimUrl;
+use requirements_txt::{
+    EditableRequirement, Requirement, RequirementEntry, RequirementsTxtRequirement,
+};
 use uv_cache::{ArchiveTarget, ArchiveTimestamp};
 use uv_interpreter::PythonEnvironment;
 use uv_normalize::PackageName;

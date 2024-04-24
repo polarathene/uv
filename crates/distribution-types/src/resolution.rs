@@ -1,9 +1,8 @@
 use rustc_hash::FxHashMap;
 
-use pep508_rs::Requirement;
 use uv_normalize::PackageName;
 
-use crate::{BuiltDist, Dist, InstalledDist, Name, ResolvedDist, SourceDist};
+use crate::{BuiltDist, Dist, InstalledDist, Name, Requirement, ResolvedDist, SourceDist};
 
 /// A set of packages pinned at specific versions.
 #[derive(Debug, Default, Clone)]

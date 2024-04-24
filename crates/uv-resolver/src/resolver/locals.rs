@@ -6,7 +6,7 @@ use rustc_hash::FxHashMap;
 use distribution_filename::{SourceDistFilename, WheelFilename};
 use distribution_types::RemoteSource;
 use pep440_rs::{Operator, Version, VersionSpecifier, VersionSpecifierBuildError};
-use pep508_rs::{MarkerEnvironment, VersionOrUrl};
+use pep508_rs::{MarkerEnvironment, VerbatimUrl, VersionOrUrl};
 use uv_normalize::PackageName;
 
 use crate::{DependencyMode, Manifest};
@@ -143,7 +143,7 @@ fn is_compatible(expected: &Version, provided: &Version) -> bool {
 
 /// If a [`VersionSpecifier`] contains exact equality specifiers for a local version, returns an
 /// iterator over the local versions.
-fn iter_locals(version_or_url: &VersionOrUrl) -> impl Iterator<Item = Version> + '_ {
+fn iter_locals(version_or_url: &VersionOrUrl<VerbatimUrl>) -> impl Iterator<Item = Version> + '_ {
     match version_or_url {
         // Extract all local versions from specifiers that require an exact version (e.g.,
         // `==1.0.0+local`).

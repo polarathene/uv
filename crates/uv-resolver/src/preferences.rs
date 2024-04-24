@@ -4,10 +4,9 @@ use rustc_hash::FxHashMap;
 use tracing::trace;
 
 use pep440_rs::{Operator, Version};
-use pep508_rs::UnnamedRequirement;
-use pep508_rs::{MarkerEnvironment, Requirement, VersionOrUrl};
+use pep508_rs::{MarkerEnvironment, UnnamedRequirement, VersionOrUrl};
 use pypi_types::{HashDigest, HashError};
-use requirements_txt::{RequirementEntry, RequirementsTxtRequirement};
+use requirements_txt::{Requirement, RequirementEntry, RequirementsTxtRequirement};
 use uv_normalize::PackageName;
 
 #[derive(thiserror::Error, Debug)]

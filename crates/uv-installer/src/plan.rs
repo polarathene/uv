@@ -10,8 +10,9 @@ use distribution_types::{
     BuiltDist, CachedDirectUrlDist, CachedDist, Dist, IndexLocations, InstalledDist,
     InstalledMetadata, InstalledVersion, Name, SourceDist,
 };
-use pep508_rs::{Requirement, VersionOrUrl};
+use pep508_rs::{VerbatimUrl, VersionOrUrl};
 use platform_tags::Tags;
+use requirements_txt::Requirement;
 use uv_cache::{ArchiveTarget, ArchiveTimestamp, Cache, CacheBucket, WheelCache};
 use uv_configuration::{NoBinary, Reinstall};
 use uv_distribution::{
@@ -391,7 +392,7 @@ enum Specifier<'a> {
     /// An editable requirement, marked by the installed version of the package.
     Editable(InstalledVersion<'a>),
     /// A non-editable requirement, marked by the version or URL specifier.
-    NonEditable(Option<&'a VersionOrUrl>),
+    NonEditable(Option<&'a VersionOrUrl<VerbatimUrl>>),
 }
 
 #[derive(Debug, Default)]

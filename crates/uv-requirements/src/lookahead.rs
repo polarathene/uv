@@ -6,8 +6,9 @@ use rustc_hash::FxHashSet;
 use thiserror::Error;
 
 use distribution_types::{BuiltDist, Dist, DistributionMetadata, LocalEditable, SourceDist};
-use pep508_rs::{MarkerEnvironment, Requirement, VersionOrUrl};
+use pep508_rs::{MarkerEnvironment, VersionOrUrl};
 use pypi_types::Metadata23;
+use requirements_txt::Requirement;
 use uv_client::RegistryClient;
 use uv_configuration::{Constraints, Overrides};
 use uv_distribution::{DistributionDatabase, Reporter};

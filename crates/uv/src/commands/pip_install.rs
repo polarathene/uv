@@ -1,11 +1,9 @@
 use std::borrow::Cow;
 use std::fmt::Write;
-
 use std::path::Path;
 
 use anstream::eprint;
 use anyhow::{anyhow, Context, Result};
-
 use itertools::Itertools;
 use owo_colors::OwoColorize;
 use tempfile::tempdir_in;
@@ -16,10 +14,10 @@ use distribution_types::{
     LocalEditables, Name, Resolution,
 };
 use install_wheel_rs::linker::LinkMode;
-use pep508_rs::{MarkerEnvironment, Requirement};
+use pep508_rs::MarkerEnvironment;
 use platform_tags::Tags;
 use pypi_types::{Metadata23, Yanked};
-use requirements_txt::EditableRequirement;
+use requirements_txt::{EditableRequirement, Requirement};
 use uv_auth::store_credentials_from_url;
 use uv_cache::Cache;
 use uv_client::{

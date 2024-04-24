@@ -46,8 +46,8 @@ use unscanny::{Pattern, Scanner};
 use url::Url;
 
 use pep508_rs::{
-    expand_env_vars, split_scheme, strip_host, Extras, Pep508Error, Pep508ErrorSource, Requirement,
-    Scheme, VerbatimUrl,
+    expand_env_vars, split_scheme, strip_host, Extras, Pep508Error, Pep508ErrorSource, Scheme,
+    VerbatimUrl,
 };
 pub use requirement::RequirementsTxtRequirement;
 #[cfg(feature = "http")]
@@ -57,6 +57,9 @@ use uv_configuration::{NoBinary, NoBuild, PackageNameSpecifier};
 use uv_fs::{normalize_url_path, Simplified};
 use uv_normalize::ExtraName;
 use uv_warnings::warn_user;
+
+pub type Requirement = pep508_rs::Requirement<VerbatimUrl>;
+pub type RequirementError = Pep508Error<VerbatimUrl>;
 
 mod requirement;
 
@@ -925,12 +928,12 @@ pub enum RequirementsTxtParserError {
         column: usize,
     },
     UnsupportedRequirement {
-        source: Pep508Error,
+        source: Pep508Error<VerbatimUrl>,
         start: usize,
         end: usize,
     },
     Pep508 {
-        source: Pep508Error,
+        source: Pep508Error<VerbatimUrl>,
         start: usize,
         end: usize,
     },
