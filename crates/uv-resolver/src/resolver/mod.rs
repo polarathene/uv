@@ -18,7 +18,7 @@ use tracing::{debug, enabled, info_span, instrument, trace, warn, Instrument, Le
 
 use distribution_types::{
     BuiltDist, Dist, DistributionMetadata, IncompatibleDist, IncompatibleSource, IncompatibleWheel,
-    InstalledDist, RemoteSource, ResolvedDist, ResolvedDistRef, SourceDist, VersionOrUrl,
+    InstalledDist, RemoteSource, ResolvedDist, ResolvedDistRef, SourceDist, VersionOrUrlRef,
 };
 pub(crate) use locals::Locals;
 use pep440_rs::{Version, MIN_VERSION};
@@ -1246,10 +1246,10 @@ impl<
                 PubGrubPackage::Python(_) => {}
                 PubGrubPackage::Extra(_, _, _) => {}
                 PubGrubPackage::Package(package_name, _extra, Some(url)) => {
-                    reporter.on_progress(package_name, &VersionOrUrl::Url(url));
+                    reporter.on_progress(package_name, &VersionOrUrlRef::Url(url));
                 }
                 PubGrubPackage::Package(package_name, _extra, None) => {
-                    reporter.on_progress(package_name, &VersionOrUrl::Version(version));
+                    reporter.on_progress(package_name, &VersionOrUrlRef::Version(version));
                 }
             }
         }
