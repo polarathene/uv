@@ -10,13 +10,16 @@ use tempfile::tempdir_in;
 use tracing::debug;
 
 use distribution_types::{
-    DistributionMetadata, IndexLocations, InstalledMetadata, LocalDist, LocalEditable,
-    LocalEditables, Name, Resolution,
+    DistributionMetadata, IndexLocations, InstalledMetadata, InstalledVersion, LocalDist,
+    LocalEditable, LocalEditables, Name, ParsedUrl, Resolution, UvSource,
 };
+use distribution_types::{UvRequirement, UvRequirements};
+use indexmap::IndexMap;
 use install_wheel_rs::linker::LinkMode;
-use pep508_rs::{MarkerEnvironment, Requirement};
+use pep440_rs::{VersionSpecifier, VersionSpecifiers};
+use pep508_rs::{MarkerEnvironment, VerbatimUrl};
 use platform_tags::Tags;
-use pypi_types::{Metadata23, Yanked};
+use pypi_types::Yanked;
 use requirements_txt::EditableRequirement;
 use uv_auth::store_credentials_from_url;
 use uv_cache::Cache;
@@ -39,14 +42,14 @@ use uv_requirements::{
 };
 use uv_resolver::{
     DependencyMode, ExcludeNewer, Exclusions, FlatIndex, InMemoryIndex, Manifest, Options,
-    OptionsBuilder, PreReleaseMode, Preference, ResolutionGraph, ResolutionMode, Resolver,
+    OptionsBuilder, Preference, PreReleaseMode, ResolutionGraph, ResolutionMode, Resolver,
 };
 use uv_toolchain::PythonVersion;
 use uv_types::{BuildIsolation, HashStrategy, InFlight};
 use uv_warnings::warn_user;
 
+use crate::commands::{ChangeEvent, ChangeEventKind, compile_bytecode, elapsed, ExitStatus};
 use crate::commands::reporters::{DownloadReporter, InstallReporter, ResolverReporter};
-use crate::commands::{compile_bytecode, elapsed, ChangeEvent, ChangeEventKind, ExitStatus};
 use crate::printer::Printer;
 
 use super::DryRunEvent;
@@ -583,9 +586,9 @@ async fn build_editables(
 /// Resolve a set of requirements, similar to running `pip compile`.
 #[allow(clippy::too_many_arguments)]
 async fn resolve(
-    requirements: Vec<Requirement>,
-    constraints: Vec<Requirement>,
-    overrides: Vec<Requirement>,
+    requirements: Vec<UvRequirement>,
+    constraints: Vec<UvRequirement>,
+    overrides: Vec<UvRequirement>,
     project: Option<PackageName>,
     editables: &[BuiltEditable],
     hasher: &HashStrategy,
@@ -609,22 +612,56 @@ async fn resolve(
 
     // Prefer current site packages; filter out packages that are marked for reinstall or upgrade
     let preferences = site_packages
-        .requirements()
-        .filter(|requirement| !exclusions.contains(&requirement.name))
-        .map(Preference::from_requirement)
-        .collect();
+        .iter()
+        .filter(|dist| !exclusions.contains(dist.name()))
+        .map(|dist| {
+            let source = match dist.installed_version() {
+                InstalledVersion::Version(version) => UvSource::Registry {
+                    version: VersionSpecifiers::from(VersionSpecifier::equals_version(
+                        version.clone(),
+                    )),
+                    // TODO(konstin): track index
+                    index: None,
+                },
+                InstalledVersion::Url(url, _version) => {
+                    let parsed_url = ParsedUrl::try_from(url)?;
+                    UvSource::from_parsed_url(parsed_url, VerbatimUrl::from_url(url.clone()))
+                }
+            };
+            let requirement = UvRequirement {
+                name: dist.name().clone(),
+                extras: vec![],
+                marker: None,
+                source,
+            };
+            Ok(Preference::from_requirement(requirement))
+        })
+        .collect::<Result<_, _>>()
+        .map_err(Error::UnsupportedInstalledDist)?;
 
     // Collect constraints and overrides.
     let constraints = Constraints::from_requirements(constraints);
     let overrides = Overrides::from_requirements(overrides);
 
     // Map the editables to their metadata.
-    let editables: Vec<(LocalEditable, Metadata23)> = editables
+    let editables: Vec<_> = editables
         .iter()
         .map(|built_editable| {
+            let dependencies: Vec<_> = built_editable
+                .metadata
+                .requires_dist
+                .iter()
+                .cloned()
+                .map(UvRequirement::from_requirement)
+                .collect::<Result<_, _>>()
+                .expect("TODO(konsti)");
             (
                 built_editable.editable.clone(),
                 built_editable.metadata.clone(),
+                UvRequirements {
+                    dependencies,
+                    optional_dependencies: IndexMap::default(),
+                },
             )
         })
         .collect();
@@ -1126,4 +1163,7 @@ enum Error {
 
     #[error(transparent)]
     Anyhow(#[from] anyhow::Error),
+
+    #[error("Installed distribution has unsupported type")]
+    UnsupportedInstalledDist(#[source] Box<distribution_types::ParsedUrlError>),
 }
