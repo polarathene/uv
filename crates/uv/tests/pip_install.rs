@@ -4437,7 +4437,7 @@ fn require_hashes_unnamed_repeated() -> Result<()> {
                 --hash=sha256:2f6da418d1f1e0fddd844478f41680e794e6051915791a034ff65e5f100525a2 \
                 --hash=sha256:f4324edc670a0f49750a81b895f35c3adb843cca46f0530f79fc1babb23789dc
                 # via anyio
-        "} )?;
+        "})?;
 
     uv_snapshot!(context.install()
         .arg("-r")
@@ -4533,6 +4533,8 @@ fn tool_uv_sources() -> Result<()> {
           "packaging @ git+https://github.com/pypa/packaging",
           "poetry_editable",
           "urllib3 @ https://files.pythonhosted.org/packages/a2/73/a68704750a7679d0b6d3ad7aa8d4da8e14e151ae82e6fee774e6e0d05ec8/urllib3-2.2.1-py3-none-any.whl",
+          # Windows consistency
+          "colorama>0.4,<5",
         ]
 
         [project.optional-dependencies]
@@ -4563,7 +4565,7 @@ fn tool_uv_sources() -> Result<()> {
     )?;
 
     // Install the editable packages.
-    uv_snapshot!(context.filters(), context.install()
+    uv_snapshot!(context.filters(), windows_filters=false, context.install()
         .arg("-r")
         .arg(require_path)
         .arg("--extra")
@@ -4573,11 +4575,12 @@ fn tool_uv_sources() -> Result<()> {
     ----- stdout -----
 
     ----- stderr -----
-    Resolved 8 packages in [TIME]
-    Downloaded 8 packages in [TIME]
-    Installed 8 packages in [TIME]
+    Resolved 9 packages in [TIME]
+    Downloaded 9 packages in [TIME]
+    Installed 9 packages in [TIME]
      + anyio==4.3.0
      + boltons==24.0.1.dev0 (from git+https://github.com/mahmoud/boltons@57fbaa9b673ed85b32458b31baeeae230520e4a0)
+     + colorama==0.4.6
      + idna==3.6
      + packaging==24.1.dev0 (from git+https://github.com/pypa/packaging@32deafe8668a2130a3366b98154914d188f3718e)
      + poetry-editable==0.1.0 (from file://[TEMP_DIR]/poetry_editable)
@@ -4596,8 +4599,8 @@ fn tool_uv_sources() -> Result<()> {
     ----- stdout -----
 
     ----- stderr -----
-    Resolved 7 packages in [TIME]
-    Audited 7 packages in [TIME]
+    Resolved 8 packages in [TIME]
+    Audited 8 packages in [TIME]
     "###
     );
     Ok(())

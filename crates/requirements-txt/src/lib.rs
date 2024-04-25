@@ -46,8 +46,8 @@ use url::Url;
 
 use distribution_types::{ParsedUrlError, UvRequirement};
 use pep508_rs::{
-    expand_env_vars, Extras, Pep508Error, Pep508ErrorSource, Requirement, Scheme, split_scheme,
-    strip_host, VerbatimUrl,
+    expand_env_vars, split_scheme, strip_host, Extras, Pep508Error, Pep508ErrorSource, Requirement,
+    Scheme, VerbatimUrl,
 };
 #[cfg(feature = "http")]
 use uv_client::BaseClient;

@@ -244,10 +244,6 @@ mod tests {
 
     #[test]
     fn direct_url_from_url() -> Result<()> {
-        let expected = Url::parse("file:///path/to/directory")?;
-        let actual = Url::from(ParsedUrl::try_from(&expected)?);
-        assert_eq!(expected, actual);
-
         let expected = Url::parse("git+https://github.com/pallets/flask.git")?;
         let actual = Url::from(ParsedUrl::try_from(&expected)?);
         assert_eq!(expected, actual);
@@ -271,6 +267,15 @@ mod tests {
         let actual = Url::from(ParsedUrl::try_from(&expected)?);
         assert_ne!(expected, actual);
 
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn direct_url_from_url_absolute() -> Result<()> {
+        let expected = Url::parse("file:///path/to/directory")?;
+        let actual = Url::from(ParsedUrl::try_from(&expected)?);
+        assert_eq!(expected, actual);
         Ok(())
     }
 }

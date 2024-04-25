@@ -42,14 +42,14 @@ use uv_requirements::{
 };
 use uv_resolver::{
     DependencyMode, ExcludeNewer, Exclusions, FlatIndex, InMemoryIndex, Manifest, Options,
-    OptionsBuilder, Preference, PreReleaseMode, ResolutionGraph, ResolutionMode, Resolver,
+    OptionsBuilder, PreReleaseMode, Preference, ResolutionGraph, ResolutionMode, Resolver,
 };
 use uv_toolchain::PythonVersion;
 use uv_types::{BuildIsolation, HashStrategy, InFlight};
 use uv_warnings::warn_user;
 
-use crate::commands::{ChangeEvent, ChangeEventKind, compile_bytecode, elapsed, ExitStatus};
 use crate::commands::reporters::{DownloadReporter, InstallReporter, ResolverReporter};
+use crate::commands::{compile_bytecode, elapsed, ChangeEvent, ChangeEventKind, ExitStatus};
 use crate::printer::Printer;
 
 use super::DryRunEvent;
