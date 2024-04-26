@@ -21,6 +21,7 @@ use url::Url;
 
 use distribution_types::{ParsedUrlError, UvRequirement, UvRequirements, UvSource};
 use pep508_rs::{Requirement, VerbatimUrl, VersionOrUrl};
+use uv_configuration::PreviewMode;
 use uv_fs::Simplified;
 use uv_git::GitReference;
 use uv_normalize::{ExtraName, PackageName};
@@ -62,6 +63,8 @@ pub enum UvSourcesLoweringError {
     /// Note: Infallible on unix and windows.
     #[error("Could not normalize path: `{0}`")]
     AbsolutizeError(String, #[source] io::Error),
+    #[error("tool.uv-sources is a preview feature, use `--preview` or UV_PREVIEW=1 to active")]
+    MissingPreview,
 }
 
 /// A `pyproject.toml` as specified in PEP 517.
@@ -213,6 +216,7 @@ impl UvMetadata {
         project_dir: &Path,
         workspace_sources: &HashMap<PackageName, Source>,
         workspace_packages: &HashMap<PackageName, String>,
+        preview: PreviewMode,
     ) -> Result<Option<Self>, Pep621Error> {
         let project_sources = pyproject
             .tool
@@ -257,6 +261,7 @@ impl UvMetadata {
             &project_sources.unwrap_or_default(),
             workspace_sources,
             workspace_packages,
+            preview,
         )?;
 
         // Parse out the project requirements.
@@ -286,6 +291,7 @@ impl UvMetadata {
     }
 }
 
+#[allow(clippy::too_many_arguments)] // Passes without preview
 pub(crate) fn lower_requirements(
     dependencies: &[String],
     optional_dependencies: &IndexMap<ExtraName, Vec<String>>,
@@ -294,6 +300,7 @@ pub(crate) fn lower_requirements(
     project_sources: &HashMap<PackageName, Source>,
     workspace_sources: &HashMap<PackageName, Source>,
     workspace_packages: &HashMap<PackageName, String>,
+    preview: PreviewMode,
 ) -> Result<UvRequirements, Pep621Error> {
     let dependencies = dependencies
         .iter()
@@ -307,6 +314,7 @@ pub(crate) fn lower_requirements(
                 project_sources,
                 workspace_sources,
                 workspace_packages,
+                preview,
             )
             .map_err(|err| Pep621Error::LoweringError(name, err))
         })
@@ -326,6 +334,7 @@ pub(crate) fn lower_requirements(
                         project_sources,
                         workspace_sources,
                         workspace_packages,
+                        preview,
                     )
                     .map_err(|err| Pep621Error::LoweringError(name, err))
                 })
@@ -347,6 +356,7 @@ pub(crate) fn lower_requirement(
     project_sources: &HashMap<PackageName, Source>,
     workspace_sources: &HashMap<PackageName, Source>,
     workspace_packages: &HashMap<PackageName, String>,
+    preview: PreviewMode,
 ) -> Result<UvRequirement, UvSourcesLoweringError> {
     let source = project_sources
         .get(&requirement.name)
@@ -372,6 +382,10 @@ pub(crate) fn lower_requirement(
             Ok(UvRequirement::from_requirement(requirement).map_err(Box::new)?)
         };
     };
+
+    if preview.is_disabled() {
+        return Err(UvSourcesLoweringError::MissingPreview);
+    }
 
     let source = match source {
         Source::Git {
@@ -581,6 +595,7 @@ mod test {
     use anyhow::Context;
     use indoc::indoc;
     use insta::assert_snapshot;
+    use uv_configuration::PreviewMode;
 
     use uv_fs::Simplified;
 
@@ -592,8 +607,13 @@ mod test {
         extras: &ExtrasSpecification,
     ) -> anyhow::Result<RequirementsSpecification> {
         let path = uv_fs::absolutize_path(path.as_ref())?;
-        RequirementsSpecification::parse_direct_pyproject_toml(contents, extras, path.as_ref())
-            .with_context(|| format!("Failed to parse `{}`", path.user_display()))
+        RequirementsSpecification::parse_direct_pyproject_toml(
+            contents,
+            extras,
+            path.as_ref(),
+            PreviewMode::Enabled,
+        )
+        .with_context(|| format!("Failed to parse `{}`", path.user_display()))
     }
 
     fn format_err(input: &str) -> String {

@@ -10,7 +10,7 @@ use pep508_rs::UnnamedRequirement;
 use requirements_txt::RequirementsTxtRequirement;
 use uv_cache::Cache;
 use uv_client::{BaseClientBuilder, Connectivity};
-use uv_configuration::KeyringProviderType;
+use uv_configuration::{KeyringProviderType, PreviewMode};
 use uv_fs::Simplified;
 use uv_interpreter::{PythonEnvironment, Target};
 use uv_requirements::{RequirementsSource, RequirementsSpecification};
@@ -29,6 +29,7 @@ pub(crate) async fn pip_uninstall(
     cache: Cache,
     connectivity: Connectivity,
     native_tls: bool,
+    preview: PreviewMode,
     keyring_provider: KeyringProviderType,
     printer: Printer,
 ) -> Result<ExitStatus> {
@@ -39,7 +40,8 @@ pub(crate) async fn pip_uninstall(
         .keyring(keyring_provider);
 
     // Read all requirements from the provided sources.
-    let spec = RequirementsSpecification::from_simple_sources(sources, &client_builder).await?;
+    let spec =
+        RequirementsSpecification::from_simple_sources(sources, &client_builder, preview).await?;
 
     // Detect the current Python interpreter.
     let venv = if let Some(python) = python.as_ref() {

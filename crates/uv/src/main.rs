@@ -229,6 +229,7 @@ async fn run() -> Result<ExitStatus> {
                 args.shared.system,
                 globals.native_tls,
                 globals.quiet,
+                globals.preview,
                 cache,
                 printer,
             )
@@ -272,6 +273,7 @@ async fn run() -> Result<ExitStatus> {
                 args.shared.break_system_packages,
                 args.shared.target,
                 globals.native_tls,
+                globals.preview,
                 cache,
                 printer,
             )
@@ -337,6 +339,7 @@ async fn run() -> Result<ExitStatus> {
                 args.shared.break_system_packages,
                 args.shared.target,
                 globals.native_tls,
+                globals.preview,
                 cache,
                 args.dry_run,
                 printer,
@@ -368,6 +371,7 @@ async fn run() -> Result<ExitStatus> {
                 cache,
                 args.shared.connectivity,
                 globals.native_tls,
+                globals.preview,
                 args.shared.keyring_provider,
                 printer,
             )

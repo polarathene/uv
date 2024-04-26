@@ -10,7 +10,7 @@ use distribution_types::{FlatIndexLocation, IndexUrl, UvRequirement};
 use requirements_txt::RequirementsTxtRequirement;
 use requirements_txt::{EditableRequirement, FindLink, RequirementEntry, RequirementsTxt};
 use uv_client::BaseClientBuilder;
-use uv_configuration::{NoBinary, NoBuild};
+use uv_configuration::{NoBinary, NoBuild, PreviewMode};
 use uv_fs::Simplified;
 use uv_normalize::{ExtraName, PackageName};
 
@@ -54,6 +54,7 @@ impl RequirementsSpecification {
         source: &RequirementsSource,
         extras: &ExtrasSpecification,
         client_builder: &BaseClientBuilder<'_>,
+        preview: PreviewMode,
     ) -> Result<Self> {
         Ok(match source {
             RequirementsSource::Package(name) => {
@@ -131,7 +132,7 @@ impl RequirementsSpecification {
                 // We need to join relative paths inside pyproject.toml to this.
                 let contents = uv_fs::read_to_string(&path).await?;
                 let path = uv_fs::absolutize_path(path)?;
-                Self::parse_direct_pyproject_toml(&contents, extras, path.as_ref())
+                Self::parse_direct_pyproject_toml(&contents, extras, path.as_ref(), preview)
                     .with_context(|| format!("Failed to parse `{}`", path.user_display()))?
             }
             RequirementsSource::SetupPy(path) | RequirementsSource::SetupCfg(path) => {
@@ -169,6 +170,7 @@ impl RequirementsSpecification {
         contents: &str,
         extras: &ExtrasSpecification,
         path: &Path,
+        preview: PreviewMode,
     ) -> Result<Self> {
         let pyproject = toml::from_str::<PyProjectToml>(contents)?;
 
@@ -183,6 +185,7 @@ impl RequirementsSpecification {
             project_dir,
             &workspace_sources,
             &workspace_packages,
+            preview,
         ) {
             Ok(Some(project)) => Ok(Self {
                 project: Some(project.name),
@@ -224,6 +227,7 @@ impl RequirementsSpecification {
         overrides: &[RequirementsSource],
         extras: &ExtrasSpecification,
         client_builder: &BaseClientBuilder<'_>,
+        preview: PreviewMode,
     ) -> Result<Self> {
         let mut spec = Self::default();
 
@@ -231,7 +235,7 @@ impl RequirementsSpecification {
         // A `requirements.txt` can contain a `-c constraints.txt` directive within it, so reading
         // a requirements file can also add constraints.
         for source in requirements {
-            let source = Self::from_source(source, extras, client_builder).await?;
+            let source = Self::from_source(source, extras, client_builder, preview).await?;
             spec.requirements.extend(source.requirements);
             spec.constraints.extend(source.constraints);
             spec.overrides.extend(source.overrides);
@@ -264,7 +268,7 @@ impl RequirementsSpecification {
         // Read all constraints, treating both requirements _and_ constraints as constraints.
         // Overrides are ignored, as are the hashes, as they are not relevant for constraints.
         for source in constraints {
-            let source = Self::from_source(source, extras, client_builder).await?;
+            let source = Self::from_source(source, extras, client_builder, preview).await?;
             for entry in source.requirements {
                 match entry.requirement {
                     RequirementsTxtRequirement::Uv(requirement) => {
@@ -299,7 +303,7 @@ impl RequirementsSpecification {
         // Read all overrides, treating both requirements _and_ overrides as overrides.
         // Constraints are ignored.
         for source in overrides {
-            let source = Self::from_source(source, extras, client_builder).await?;
+            let source = Self::from_source(source, extras, client_builder, preview).await?;
             spec.overrides.extend(source.requirements);
             spec.overrides.extend(source.overrides);
 
@@ -327,6 +331,7 @@ impl RequirementsSpecification {
     pub async fn from_simple_sources(
         requirements: &[RequirementsSource],
         client_builder: &BaseClientBuilder<'_>,
+        preview: PreviewMode,
     ) -> Result<Self> {
         Self::from_sources(
             requirements,
@@ -334,6 +339,7 @@ impl RequirementsSpecification {
             &[],
             &ExtrasSpecification::None,
             client_builder,
+            preview,
         )
         .await
     }
