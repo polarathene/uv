@@ -9,19 +9,18 @@
 
 use std::ffi::OsString;
 use std::io;
-use std::path::PathBuf;
-use std::process::ExitStatus;
 
 use thiserror::Error;
 
+pub use crate::discovery::Error as DiscoveryError;
 pub use crate::environment::PythonEnvironment;
 pub use crate::find_python::{find_best_python, find_default_python, find_requested_python};
 pub use crate::interpreter::Interpreter;
-use crate::interpreter::InterpreterInfoError;
 pub use crate::python_version::PythonVersion;
 pub use crate::target::Target;
-pub use crate::virtualenv::{PyVenvConfiguration, VirtualEnvironment};
+pub use crate::virtualenv::{Error as VirtualEnvError, PyVenvConfiguration, VirtualEnvironment};
 
+mod discovery;
 mod environment;
 mod find_python;
 mod implementation;
@@ -35,8 +34,18 @@ mod virtualenv;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("Expected `{0}` to be a virtualenv, but `pyvenv.cfg` is missing")]
-    MissingPyVenvCfg(PathBuf),
+    #[error(transparent)]
+    VirtualEnv(#[from] virtualenv::Error),
+
+    #[error(transparent)]
+    Query(#[from] interpreter::Error),
+
+    #[error(transparent)]
+    Request(#[from] discovery::Error),
+
+    #[error(transparent)]
+    PyLauncher(#[from] py_launcher::Error),
+
     #[error("No versions of Python could be found. Is Python installed?")]
     PythonNotFound,
     #[error("Failed to locate a virtualenv or Conda environment (checked: `VIRTUAL_ENV`, `CONDA_PREFIX`, and `.venv`). Run `uv venv` to create a virtualenv.")]
@@ -45,14 +54,6 @@ pub enum Error {
     RequestedPythonNotFound(String),
     #[error(transparent)]
     Io(#[from] io::Error),
-    #[error("Failed to query Python interpreter at `{interpreter}`")]
-    PythonSubcommandLaunch {
-        interpreter: PathBuf,
-        #[source]
-        err: io::Error,
-    },
-    #[error(transparent)]
-    PyLauncher(#[from] py_launcher::Error),
     #[cfg(windows)]
     #[error(
         "No Python {0} found through `py --list-paths` or in `PATH`. Is Python {0} installed?"
@@ -67,23 +68,8 @@ pub enum Error {
         "Could not find `python.exe` through `py --list-paths` or in 'PATH'. Is Python installed?"
     )]
     NoPythonInstalledWindows,
-    #[error("{message} with {exit_code}\n--- stdout:\n{stdout}\n--- stderr:\n{stderr}\n---")]
-    PythonSubcommandOutput {
-        message: String,
-        exit_code: ExitStatus,
-        stdout: String,
-        stderr: String,
-    },
     #[error("Failed to write to cache")]
     Encode(#[from] rmp_serde::encode::Error),
-    #[error("Broken virtualenv: Failed to parse pyvenv.cfg")]
-    Cfg(#[from] virtualenv::Error),
     #[error("Error finding `{}` in PATH", _0.to_string_lossy())]
     WhichError(OsString, #[source] which::Error),
-    #[error("Can't use Python at `{interpreter}`")]
-    QueryScript {
-        #[source]
-        err: InterpreterInfoError,
-        interpreter: PathBuf,
-    },
 }

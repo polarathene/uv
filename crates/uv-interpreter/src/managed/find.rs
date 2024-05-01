@@ -1,12 +1,11 @@
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use crate::managed::downloads::Error;
-use crate::{
-    platform::{Arch, Libc, Os},
-    python_version::PythonVersion,
-};
+use crate::platform::{Arch, Libc, Os};
+use crate::python_version::PythonVersion;
 
 use once_cell::sync::Lazy;
 
@@ -25,6 +24,27 @@ pub static TOOLCHAIN_DIRECTORY: Lazy<Option<PathBuf>> = Lazy::new(|| {
     )
 });
 
+pub fn toolchains_for_current_platform() -> Result<impl Iterator<Item = Toolchain>, Error> {
+    let platform_key = platform_key_from_env()?;
+    let iter = toolchain_directories()?
+        .into_iter()
+        // Sort "newer" versions of Python first
+        .rev()
+        .filter_map(move |path| {
+            if path
+                .file_name()
+                .map(OsStr::to_string_lossy)
+                .is_some_and(|filename| filename.ends_with(&platform_key))
+            {
+                Some(Toolchain { path })
+            } else {
+                None
+            }
+        });
+
+    Ok(iter)
+}
+
 /// An installed Python toolchain.
 #[derive(Debug, Clone)]
 pub struct Toolchain {
@@ -41,6 +61,21 @@ impl Toolchain {
         } else {
             unimplemented!("Only Windows and Unix systems are supported.")
         }
+    }
+
+    pub fn python_version(&self) -> PythonVersion {
+        PythonVersion::from_str(
+            self.path
+                .file_name()
+                .expect("Toolchains must have a directory name")
+                .to_str()
+                .expect("Toolchains have valid names").split('-')
+                .nth(1)
+                .expect(
+                    "Toolchain directory names must have the proper number of `-` separated components",
+                ),
+        )
+        .expect("Toolchain directory names must have a valid Python version")
     }
 }
 

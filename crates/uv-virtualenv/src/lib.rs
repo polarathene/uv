@@ -15,6 +15,8 @@ pub enum Error {
     #[error(transparent)]
     IO(#[from] io::Error),
     #[error("Failed to determine python interpreter to use")]
+    DiscoveryError(#[from] uv_interpreter::DiscoveryError),
+    #[error("Failed to determine python interpreter to use")]
     InterpreterError(#[from] uv_interpreter::Error),
     #[error(transparent)]
     Platform(#[from] PlatformError),
