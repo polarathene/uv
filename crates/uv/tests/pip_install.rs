@@ -946,7 +946,7 @@ fn install_no_index() {
 
     ----- stderr -----
       × No solution found when resolving dependencies:
-      ╰─▶ Because flask was not found in the provided package locations and you require flask, we can conclude that the requirements are unsatisfiable.
+      ╰─▶ Because all versions of flask were not found in the provided package locations and you require flask, we can conclude that the requirements are unsatisfiable.
 
           hint: Packages were unavailable because index lookups were disabled and no additional package locations were provided (try: `--find-links <uri>`)
     "###
@@ -1510,7 +1510,7 @@ fn only_binary_requirements_txt() {
 
     ----- stderr -----
       × No solution found when resolving dependencies:
-      ╰─▶ Because django-allauth==0.51.0 is unusable because no wheels are usable and building from source is disabled and you require django-allauth==0.51.0, we can conclude that the requirements are unsatisfiable.
+      ╰─▶ Because django-allauth==0.51.0 has no usable wheels and building from source is disabled and you require django-allauth==0.51.0, we can conclude that the requirements are unsatisfiable.
     "###
     );
 }
@@ -3516,7 +3516,7 @@ fn reinstall_no_index() {
 
     ----- stderr -----
       × No solution found when resolving dependencies:
-      ╰─▶ Because anyio was not found in the provided package locations and you require anyio, we can conclude that the requirements are unsatisfiable.
+      ╰─▶ Because all versions of anyio were not found in the provided package locations and you require anyio, we can conclude that the requirements are unsatisfiable.
 
           hint: Packages were unavailable because index lookups were disabled and no additional package locations were provided (try: `--find-links <uri>`)
     "###
@@ -3634,7 +3634,7 @@ fn already_installed_dependent_editable() {
 
     ----- stderr -----
       × No solution found when resolving dependencies:
-      ╰─▶ Because first-editable was not found in the provided package locations and second-editable==0.0.1 depends on first-editable, we can conclude that second-editable==0.0.1 cannot be used.
+      ╰─▶ Because all versions of first-editable were not found in the provided package locations and second-editable==0.0.1 depends on first-editable, we can conclude that second-editable==0.0.1 cannot be used.
           And because only second-editable==0.0.1 is available and you require second-editable, we can conclude that the requirements are unsatisfiable.
     "###
     );
@@ -3730,7 +3730,7 @@ fn already_installed_local_path_dependent() {
 
     ----- stderr -----
       × No solution found when resolving dependencies:
-      ╰─▶ Because first-local was not found in the provided package locations and second-local==0.1.0 depends on first-local, we can conclude that second-local==0.1.0 cannot be used.
+      ╰─▶ Because all versions of first-local were not found in the provided package locations and second-local==0.1.0 depends on first-local, we can conclude that second-local==0.1.0 cannot be used.
           And because only second-local==0.1.0 is available and you require second-local, we can conclude that the requirements are unsatisfiable.
     "###
     );
@@ -3770,7 +3770,7 @@ fn already_installed_local_path_dependent() {
 
     ----- stderr -----
       × No solution found when resolving dependencies:
-      ╰─▶ Because first-local was not found in the provided package locations and second-local==0.1.0 depends on first-local, we can conclude that second-local==0.1.0 cannot be used.
+      ╰─▶ Because all versions of first-local were not found in the provided package locations and second-local==0.1.0 depends on first-local, we can conclude that second-local==0.1.0 cannot be used.
           And because only second-local==0.1.0 is available and you require second-local, we can conclude that the requirements are unsatisfiable.
     "###
     );
@@ -4070,7 +4070,7 @@ fn already_installed_remote_url() {
 
     ----- stderr -----
       × No solution found when resolving dependencies:
-      ╰─▶ Because uv-public-pypackage was not found in the provided package locations and you require uv-public-pypackage, we can conclude that the requirements are unsatisfiable.
+      ╰─▶ Because all versions of uv-public-pypackage were not found in the provided package locations and you require uv-public-pypackage, we can conclude that the requirements are unsatisfiable.
 
           hint: Packages were unavailable because index lookups were disabled and no additional package locations were provided (try: `--find-links <uri>`)
     "###);

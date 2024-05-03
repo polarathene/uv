@@ -21,7 +21,7 @@ use crate::candidate_selector::CandidateSelector;
 use crate::dependency_provider::UvDependencyProvider;
 use crate::pubgrub::{PubGrubPackage, PubGrubPython, PubGrubReportFormatter};
 use crate::python_requirement::PythonRequirement;
-use crate::resolver::{IncompletePackage, UnavailablePackage, VersionsResponse};
+use crate::resolver::{IncompletePackage, UnavailablePackage, UnavailableReason, VersionsResponse};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ResolveError {
@@ -112,7 +112,9 @@ impl<T> From<tokio::sync::mpsc::error::SendError<T>> for ResolveError {
 
 /// Given a [`DerivationTree`], collapse any [`External::FromDependencyOf`] incompatibilities
 /// wrap an [`PubGrubPackage::Extra`] package.
-fn collapse_extra_proxies(derivation_tree: &mut DerivationTree<PubGrubPackage, Range<Version>>) {
+fn collapse_extra_proxies(
+    derivation_tree: &mut DerivationTree<PubGrubPackage, Range<Version>, UnavailableReason>,
+) {
     match derivation_tree {
         DerivationTree::External(_) => {}
         DerivationTree::Derived(derived) => {
@@ -186,7 +188,7 @@ impl From<pubgrub::error::PubGrubError<UvDependencyProvider>> for ResolveError {
 /// A wrapper around [`pubgrub::error::PubGrubError::NoSolution`] that displays a resolution failure report.
 #[derive(Debug)]
 pub struct NoSolutionError {
-    derivation_tree: DerivationTree<PubGrubPackage, Range<Version>>,
+    derivation_tree: DerivationTree<PubGrubPackage, Range<Version>, UnavailableReason>,
     available_versions: IndexMap<PubGrubPackage, BTreeSet<Version>>,
     selector: Option<CandidateSelector>,
     python_requirement: Option<PythonRequirement>,
