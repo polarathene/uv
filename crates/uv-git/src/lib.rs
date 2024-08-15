@@ -1,18 +1,28 @@
-use std::str::FromStr;
+use std::sync::LazyLock;
+
 use url::Url;
 
+use crate::credentials::GitStore;
 pub use crate::git::GitReference;
-pub use crate::sha::GitSha;
+pub use crate::resolver::{
+    GitResolver, GitResolverError, RepositoryReference, ResolvedRepositoryReference,
+};
+pub use crate::sha::{GitOid, GitSha, OidParseError};
 pub use crate::source::{Fetch, GitSource, Reporter};
 
+mod credentials;
 mod git;
-mod known_hosts;
+mod resolver;
 mod sha;
 mod source;
-mod util;
+
+/// Global authentication cache for a uv invocation.
+///
+/// This is used to share Git credentials within a single process.
+pub static GIT_STORE: LazyLock<GitStore> = LazyLock::new(GitStore::default);
 
 /// A URL reference to a Git repository.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Hash, Ord)]
 pub struct GitUrl {
     /// The URL of the Git repository, with any query parameters, fragments, and leading `git+`
     /// removed.
@@ -24,14 +34,26 @@ pub struct GitUrl {
 }
 
 impl GitUrl {
-    pub fn new(repository: Url, reference: GitReference) -> Self {
+    /// Create a new [`GitUrl`] from a repository URL and a reference.
+    pub fn from_reference(repository: Url, reference: GitReference) -> Self {
+        let precise = reference.as_sha();
         Self {
             repository,
             reference,
-            precise: None,
+            precise,
         }
     }
 
+    /// Create a new [`GitUrl`] from a repository URL and a precise commit.
+    pub fn from_commit(repository: Url, reference: GitReference, precise: GitSha) -> Self {
+        Self {
+            repository,
+            reference,
+            precise: Some(precise),
+        }
+    }
+
+    /// Set the precise [`GitSha`] to use for this Git URL.
     #[must_use]
     pub fn with_precise(mut self, precise: GitSha) -> Self {
         self.precise = Some(precise);
@@ -48,11 +70,6 @@ impl GitUrl {
         &self.reference
     }
 
-    /// Returns `true` if the reference is a full commit.
-    pub fn is_full_commit(&self) -> bool {
-        matches!(self.reference, GitReference::FullCommit(_))
-    }
-
     /// Return the precise commit, if known.
     pub fn precise(&self) -> Option<GitSha> {
         self.precise
@@ -60,7 +77,7 @@ impl GitUrl {
 }
 
 impl TryFrom<Url> for GitUrl {
-    type Error = git2::Error;
+    type Error = OidParseError;
 
     /// Initialize a [`GitUrl`] source from a URL.
     fn try_from(mut url: Url) -> Result<Self, Self::Error> {
@@ -76,21 +93,11 @@ impl TryFrom<Url> for GitUrl {
             .rsplit_once('@')
             .map(|(prefix, suffix)| (prefix.to_string(), suffix.to_string()))
         {
-            reference = GitReference::from_rev(&suffix);
+            reference = GitReference::from_rev(suffix);
             url.set_path(&prefix);
         }
 
-        let precise = if let GitReference::FullCommit(rev) = &reference {
-            Some(GitSha::from_str(rev)?)
-        } else {
-            None
-        };
-
-        Ok(Self {
-            repository: url,
-            reference,
-            precise,
-        })
+        Ok(Self::from_reference(url, reference))
     }
 }
 
@@ -104,7 +111,10 @@ impl From<GitUrl> for Url {
         } else {
             // Otherwise, add the branch or tag name.
             match git.reference {
-                GitReference::BranchOrTag(rev)
+                GitReference::Branch(rev)
+                | GitReference::Tag(rev)
+                | GitReference::ShortCommit(rev)
+                | GitReference::BranchOrTag(rev)
                 | GitReference::NamedRef(rev)
                 | GitReference::FullCommit(rev)
                 | GitReference::BranchOrTagOrCommit(rev) => {
@@ -122,12 +132,4 @@ impl std::fmt::Display for GitUrl {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.repository)
     }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum FetchStrategy {
-    /// Fetch Git repositories using libgit2.
-    Libgit2,
-    /// Fetch Git repositories using the `git` CLI.
-    Cli,
 }

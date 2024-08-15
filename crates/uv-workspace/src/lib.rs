@@ -1,5 +1,8 @@
-pub use crate::settings::*;
-pub use crate::workspace::*;
+pub use workspace::{
+    check_nested_workspaces, DiscoveryOptions, ProjectWorkspace, VirtualProject, Workspace,
+    WorkspaceError, WorkspaceMember,
+};
 
-mod settings;
+pub mod pyproject;
+pub mod pyproject_mut;
 mod workspace;

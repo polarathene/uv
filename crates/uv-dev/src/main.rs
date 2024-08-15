@@ -1,7 +1,7 @@
 use std::env;
-use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::str::FromStr;
 use std::time::Instant;
 
 use anstream::{eprintln, println};
@@ -11,20 +11,20 @@ use owo_colors::OwoColorize;
 use tracing::{debug, instrument};
 use tracing_durations_export::plot::PlotConfig;
 use tracing_durations_export::DurationsLayerBuilder;
-use tracing_indicatif::IndicatifLayer;
+use tracing_subscriber::filter::Directive;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::EnvFilter;
-
-use resolve_many::ResolveManyArgs;
+use tracing_subscriber::{EnvFilter, Layer};
 
 use crate::build::{build, BuildArgs};
 use crate::clear_compile::ClearCompileArgs;
 use crate::compile::CompileArgs;
-use crate::fetch_python::FetchPythonArgs;
-use crate::generate_json_schema::GenerateJsonSchemaArgs;
+use crate::generate_all::Args as GenerateAllArgs;
+use crate::generate_cli_reference::Args as GenerateCliReferenceArgs;
+use crate::generate_json_schema::Args as GenerateJsonSchemaArgs;
+use crate::generate_options_reference::Args as GenerateOptionsReferenceArgs;
+#[cfg(feature = "render")]
 use crate::render_benchmarks::RenderBenchmarksArgs;
-use crate::resolve_cli::ResolveCliArgs;
 use crate::wheel_metadata::WheelMetadataArgs;
 
 #[cfg(target_os = "windows")]
@@ -46,42 +46,36 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 mod build;
 mod clear_compile;
 mod compile;
-mod fetch_python;
+mod generate_all;
+mod generate_cli_reference;
 mod generate_json_schema;
+mod generate_options_reference;
 mod render_benchmarks;
-mod resolve_cli;
-mod resolve_many;
 mod wheel_metadata;
 
 const ROOT_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../");
 
 #[derive(Parser)]
 enum Cli {
-    /// Build a source distribution into a wheel
+    /// Build a source distribution into a wheel.
     Build(BuildArgs),
-    /// Resolve many requirements independently in parallel and report failures and successes.
-    ///
-    /// Run `scripts/popular_packages/pypi_8k_downloads.sh` once, then
-    /// ```bash
-    /// cargo run --bin uv-dev -- resolve-many scripts/popular_packages/pypi_8k_downloads.txt
-    /// ```
-    /// or
-    /// ```bash
-    /// cargo run --bin uv-dev -- resolve-many scripts/popular_packages/pypi_10k_most_dependents.txt
-    /// ```
-    ResolveMany(ResolveManyArgs),
-    /// Resolve requirements passed on the CLI
-    Resolve(ResolveCliArgs),
+    /// Display the metadata for a `.whl` at a given URL.
     WheelMetadata(WheelMetadataArgs),
-    RenderBenchmarks(RenderBenchmarksArgs),
     /// Compile all `.py` to `.pyc` files in the tree.
     Compile(CompileArgs),
     /// Remove all `.pyc` in the tree.
     ClearCompile(ClearCompileArgs),
-    /// Fetch Python versions for testing
-    FetchPython(FetchPythonArgs),
+    /// Run all code and documentation generation steps.
+    GenerateAll(GenerateAllArgs),
     /// Generate JSON schema for the TOML configuration file.
     GenerateJSONSchema(GenerateJsonSchemaArgs),
+    /// Generate the options reference for the documentation.
+    GenerateOptionsReference(GenerateOptionsReferenceArgs),
+    /// Generate the CLI reference for the documentation.
+    GenerateCliReference(GenerateCliReferenceArgs),
+    #[cfg(feature = "render")]
+    /// Render the benchmarks.
+    RenderBenchmarks(RenderBenchmarksArgs),
 }
 
 #[instrument] // Anchor span to check for overhead
@@ -92,23 +86,20 @@ async fn run() -> Result<()> {
             let target = build(args).await?;
             println!("Wheel built to {}", target.display());
         }
-        Cli::ResolveMany(args) => {
-            resolve_many::resolve_many(args).await?;
-        }
-        Cli::Resolve(args) => {
-            resolve_cli::resolve_cli(args).await?;
-        }
         Cli::WheelMetadata(args) => wheel_metadata::wheel_metadata(args).await?,
-        Cli::RenderBenchmarks(args) => render_benchmarks::render_benchmarks(&args)?,
         Cli::Compile(args) => compile::compile(args).await?,
         Cli::ClearCompile(args) => clear_compile::clear_compile(&args)?,
-        Cli::FetchPython(args) => fetch_python::fetch_python(args).await?,
+        Cli::GenerateAll(args) => generate_all::main(&args)?,
         Cli::GenerateJSONSchema(args) => generate_json_schema::main(&args)?,
+        Cli::GenerateOptionsReference(args) => generate_options_reference::main(&args)?,
+        Cli::GenerateCliReference(args) => generate_cli_reference::main(&args)?,
+        #[cfg(feature = "render")]
+        Cli::RenderBenchmarks(args) => render_benchmarks::render_benchmarks(&args)?,
     }
     Ok(())
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
     let (duration_layer, _guard) = if let Ok(location) = env::var("TRACING_DURATIONS_FILE") {
         let location = PathBuf::from(location);
@@ -138,22 +129,21 @@ async fn main() -> ExitCode {
         (None, None)
     };
 
-    let indicatif_layer = IndicatifLayer::new();
-    let indicatif_compatible_writer_layer = tracing_subscriber::fmt::layer()
-        .with_writer(indicatif_layer.get_stderr_writer())
-        .with_ansi(std::io::stderr().is_terminal())
-        .with_target(false);
-    let filter_layer = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        EnvFilter::builder()
-            // Show only the important spans
-            .parse("uv_dev=info,uv_dispatch=info")
-            .unwrap()
-    });
+    // Show `INFO` messages from the uv crate, but allow `RUST_LOG` to override.
+    let default_directive = Directive::from_str("uv=info").unwrap();
+
+    let filter = EnvFilter::builder()
+        .with_default_directive(default_directive)
+        .from_env()
+        .expect("Valid RUST_LOG directives");
+
     tracing_subscriber::registry()
         .with(duration_layer)
-        .with(filter_layer)
-        .with(indicatif_compatible_writer_layer)
-        .with(indicatif_layer)
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::io::stderr)
+                .with_filter(filter),
+        )
         .init();
 
     let start = Instant::now();

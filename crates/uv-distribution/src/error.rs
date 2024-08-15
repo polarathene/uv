@@ -1,32 +1,37 @@
 use std::path::PathBuf;
+
 use tokio::task::JoinError;
+use url::Url;
 use zip::result::ZipError;
 
+use crate::metadata::MetadataError;
 use distribution_filename::WheelFilenameError;
-use distribution_types::ParsedUrlError;
 use pep440_rs::Version;
-use pypi_types::HashDigest;
-use uv_client::BetterReqwestError;
+use pypi_types::{HashDigest, ParsedUrlError};
+use uv_client::WrappedReqwestError;
+use uv_fs::Simplified;
 use uv_normalize::PackageName;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("Building source distributions is disabled")]
     NoBuild,
-    #[error("Using pre-built wheels is disabled")]
-    NoBinary,
 
     // Network error
     #[error("Failed to parse URL: {0}")]
     Url(String, #[source] url::ParseError),
+    #[error("Expected an absolute path, but received: {}", _0.user_display())]
+    RelativePath(PathBuf),
+    #[error(transparent)]
+    ParsedUrl(#[from] ParsedUrlError),
     #[error(transparent)]
     JoinRelativeUrl(#[from] pypi_types::JoinRelativeError),
-    #[error("Git operation failed")]
-    Git(#[source] anyhow::Error),
+    #[error("Expected a file URL, but received: {0}")]
+    NonFileUrl(Url),
     #[error(transparent)]
-    DirectUrl(#[from] Box<ParsedUrlError>),
+    Git(#[from] uv_git::GitResolverError),
     #[error(transparent)]
-    Reqwest(#[from] BetterReqwestError),
+    Reqwest(#[from] WrappedReqwestError),
     #[error(transparent)]
     Client(#[from] uv_client::Error),
 
@@ -41,8 +46,8 @@ pub enum Error {
     CacheEncode(#[from] rmp_serde::encode::Error),
 
     // Build error
-    #[error("Failed to build: `{0}`")]
-    Build(String, #[source] anyhow::Error),
+    #[error(transparent)]
+    Build(anyhow::Error),
     #[error("Failed to build editable: `{0}`")]
     BuildEditable(String, #[source] anyhow::Error),
     #[error("Built wheel has an invalid filename")]
@@ -60,22 +65,24 @@ pub enum Error {
     DistInfo(#[from] install_wheel_rs::Error),
     #[error("Failed to read zip archive from built wheel")]
     Zip(#[from] ZipError),
-    #[error("Source distribution directory contains neither readable pyproject.toml nor setup.py")]
-    DirWithoutEntrypoint,
+    #[error("Source distribution directory contains neither readable `pyproject.toml` nor `setup.py`: `{}`", _0.user_display())]
+    DirWithoutEntrypoint(PathBuf),
     #[error("Failed to extract archive")]
     Extract(#[from] uv_extract::Error),
-    #[error("Source distribution not found at: {0}")]
-    NotFound(PathBuf),
     #[error("The source distribution is missing a `PKG-INFO` file")]
     MissingPkgInfo,
-    #[error("The source distribution does not support static metadata in `PKG-INFO`")]
-    DynamicPkgInfo(#[source] pypi_types::MetadataError),
+    #[error("Failed to extract static metadata from `PKG-INFO`")]
+    PkgInfo(#[source] pypi_types::MetadataError),
     #[error("The source distribution is missing a `pyproject.toml` file")]
     MissingPyprojectToml,
-    #[error("The source distribution does not support static metadata in `pyproject.toml`")]
-    DynamicPyprojectToml(#[source] pypi_types::MetadataError),
+    #[error("Failed to extract static metadata from `pyproject.toml`")]
+    PyprojectToml(#[source] pypi_types::MetadataError),
     #[error("Unsupported scheme in URL: {0}")]
     UnsupportedScheme(String),
+    #[error(transparent)]
+    MetadataLowering(#[from] MetadataError),
+    #[error("Distribution not found at: {0}")]
+    NotFound(Url),
 
     /// A generic request middleware error happened while making a request.
     /// Refer to the error message for more details.
@@ -123,7 +130,7 @@ pub enum Error {
 
 impl From<reqwest::Error> for Error {
     fn from(error: reqwest::Error) -> Self {
-        Self::Reqwest(BetterReqwestError::from(error))
+        Self::Reqwest(WrappedReqwestError::from(error))
     }
 }
 
@@ -132,7 +139,7 @@ impl From<reqwest_middleware::Error> for Error {
         match error {
             reqwest_middleware::Error::Middleware(error) => Self::ReqwestMiddlewareError(error),
             reqwest_middleware::Error::Reqwest(error) => {
-                Self::Reqwest(BetterReqwestError::from(error))
+                Self::Reqwest(WrappedReqwestError::from(error))
             }
         }
     }

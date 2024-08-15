@@ -1,74 +1,140 @@
-use rustc_hash::FxHashMap;
+use distribution_filename::DistExtension;
+use pep508_rs::MarkerTree;
+use pypi_types::{HashDigest, Requirement, RequirementSource};
+use std::collections::BTreeMap;
+use uv_normalize::{ExtraName, GroupName, PackageName};
 
-use uv_normalize::PackageName;
-
-use crate::{
-    BuiltDist, Dist, Name, ParsedGitUrl, Requirement, RequirementSource, ResolvedDist, SourceDist,
-};
+use crate::{BuiltDist, Diagnostic, Dist, Name, ResolvedDist, SourceDist};
 
 /// A set of packages pinned at specific versions.
 #[derive(Debug, Default, Clone)]
-pub struct Resolution(FxHashMap<PackageName, ResolvedDist>);
+pub struct Resolution {
+    packages: BTreeMap<PackageName, ResolvedDist>,
+    hashes: BTreeMap<PackageName, Vec<HashDigest>>,
+    diagnostics: Vec<ResolutionDiagnostic>,
+}
 
 impl Resolution {
     /// Create a new resolution from the given pinned packages.
-    pub fn new(packages: FxHashMap<PackageName, ResolvedDist>) -> Self {
-        Self(packages)
-    }
-
-    /// Return the distribution for the given package name, if it exists.
-    pub fn get(&self, package_name: &PackageName) -> Option<&ResolvedDist> {
-        self.0.get(package_name)
+    pub fn new(
+        packages: BTreeMap<PackageName, ResolvedDist>,
+        hashes: BTreeMap<PackageName, Vec<HashDigest>>,
+        diagnostics: Vec<ResolutionDiagnostic>,
+    ) -> Self {
+        Self {
+            packages,
+            hashes,
+            diagnostics,
+        }
     }
 
     /// Return the remote distribution for the given package name, if it exists.
     pub fn get_remote(&self, package_name: &PackageName) -> Option<&Dist> {
-        match self.0.get(package_name) {
-            Some(dist) => match dist {
-                ResolvedDist::Installable(dist) => Some(dist),
-                ResolvedDist::Installed(_) => None,
-            },
-            None => None,
+        match self.packages.get(package_name)? {
+            ResolvedDist::Installable(dist) => Some(dist),
+            ResolvedDist::Installed(_) => None,
         }
+    }
+
+    /// Return the hashes for the given package name, if they exist.
+    pub fn get_hashes(&self, package_name: &PackageName) -> &[HashDigest] {
+        self.hashes.get(package_name).map_or(&[], Vec::as_slice)
     }
 
     /// Iterate over the [`PackageName`] entities in this resolution.
     pub fn packages(&self) -> impl Iterator<Item = &PackageName> {
-        self.0.keys()
+        self.packages.keys()
     }
 
     /// Iterate over the [`ResolvedDist`] entities in this resolution.
     pub fn distributions(&self) -> impl Iterator<Item = &ResolvedDist> {
-        self.0.values()
-    }
-
-    /// Iterate over the [`ResolvedDist`] entities in this resolution.
-    pub fn into_distributions(self) -> impl Iterator<Item = ResolvedDist> {
-        self.0.into_values()
+        self.packages.values()
     }
 
     /// Return the number of distributions in this resolution.
     pub fn len(&self) -> usize {
-        self.0.len()
+        self.packages.len()
     }
 
     /// Return `true` if there are no pinned packages in this resolution.
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.packages.is_empty()
     }
 
-    /// Return the set of [`Requirement`]s that this resolution represents, exclusive of any
-    /// editable requirements.
-    pub fn requirements(&self) -> Vec<Requirement> {
-        let mut requirements: Vec<_> = self
-            .0
-            .values()
-            // Remove editable requirements
-            .filter(|dist| !dist.is_editable())
-            .map(Requirement::from)
-            .collect();
-        requirements.sort_unstable_by(|a, b| a.name.cmp(&b.name));
-        requirements
+    /// Return the set of [`Requirement`]s that this resolution represents.
+    pub fn requirements(&self) -> impl Iterator<Item = Requirement> + '_ {
+        self.packages.values().map(Requirement::from)
+    }
+
+    /// Return the [`ResolutionDiagnostic`]s that were produced during resolution.
+    pub fn diagnostics(&self) -> &[ResolutionDiagnostic] {
+        &self.diagnostics
+    }
+}
+
+#[derive(Debug, Clone, Hash)]
+pub enum ResolutionDiagnostic {
+    MissingExtra {
+        /// The distribution that was requested with a non-existent extra. For example,
+        /// `black==23.10.0`.
+        dist: ResolvedDist,
+        /// The extra that was requested. For example, `colorama` in `black[colorama]`.
+        extra: ExtraName,
+    },
+    MissingDev {
+        /// The distribution that was requested with a non-existent development dependency group.
+        dist: ResolvedDist,
+        /// The development dependency group that was requested.
+        dev: GroupName,
+    },
+    YankedVersion {
+        /// The package that was requested with a yanked version. For example, `black==23.10.0`.
+        dist: ResolvedDist,
+        /// The reason that the version was yanked, if any.
+        reason: Option<String>,
+    },
+    MissingLowerBound {
+        /// The name of the package that had no lower bound from any other package in the
+        /// resolution. For example, `black`.
+        package_name: PackageName,
+    },
+}
+
+impl Diagnostic for ResolutionDiagnostic {
+    /// Convert the diagnostic into a user-facing message.
+    fn message(&self) -> String {
+        match self {
+            Self::MissingExtra { dist, extra } => {
+                format!("The package `{dist}` does not have an extra named `{extra}`")
+            }
+            Self::MissingDev { dist, dev } => {
+                format!("The package `{dist}` does not have a development dependency group named `{dev}`")
+            }
+            Self::YankedVersion { dist, reason } => {
+                if let Some(reason) = reason {
+                    format!("`{dist}` is yanked (reason: \"{reason}\")")
+                } else {
+                    format!("`{dist}` is yanked")
+                }
+            }
+            Self::MissingLowerBound { package_name: name } => {
+                format!(
+                    "The transitive dependency `{name}` is unpinned. \
+                    Consider setting a lower bound with a constraint when using \
+                    `--resolution-strategy lowest` to avoid using outdated versions."
+                )
+            }
+        }
+    }
+
+    /// Returns `true` if the [`PackageName`] is involved in this diagnostic.
+    fn includes(&self, name: &PackageName) -> bool {
+        match self {
+            Self::MissingExtra { dist, .. } => name == dist.name(),
+            Self::MissingDev { dist, .. } => name == dist.name(),
+            Self::YankedVersion { dist, .. } => name == dist.name(),
+            Self::MissingLowerBound { package_name } => name == package_name,
+        }
     }
 }
 
@@ -76,9 +142,11 @@ impl From<&ResolvedDist> for Requirement {
     fn from(resolved_dist: &ResolvedDist) -> Self {
         let source = match resolved_dist {
             ResolvedDist::Installable(dist) => match dist {
-                Dist::Built(BuiltDist::Registry(wheel)) => RequirementSource::Registry {
+                Dist::Built(BuiltDist::Registry(wheels)) => RequirementSource::Registry {
                     specifier: pep440_rs::VersionSpecifiers::from(
-                        pep440_rs::VersionSpecifier::equals_version(wheel.filename.version.clone()),
+                        pep440_rs::VersionSpecifier::equals_version(
+                            wheels.best_wheel().filename.version.clone(),
+                        ),
                     ),
                     index: None,
                 },
@@ -89,16 +157,18 @@ impl From<&ResolvedDist> for Requirement {
                         url: wheel.url.clone(),
                         location,
                         subdirectory: None,
+                        ext: DistExtension::Wheel,
                     }
                 }
                 Dist::Built(BuiltDist::Path(wheel)) => RequirementSource::Path {
-                    path: wheel.path.clone(),
+                    install_path: wheel.install_path.clone(),
+                    lock_path: wheel.lock_path.clone(),
                     url: wheel.url.clone(),
-                    editable: None,
+                    ext: DistExtension::Wheel,
                 },
                 Dist::Source(SourceDist::Registry(sdist)) => RequirementSource::Registry {
                     specifier: pep440_rs::VersionSpecifiers::from(
-                        pep440_rs::VersionSpecifier::equals_version(sdist.filename.version.clone()),
+                        pep440_rs::VersionSpecifier::equals_version(sdist.version.clone()),
                     ),
                     index: None,
                 },
@@ -108,23 +178,28 @@ impl From<&ResolvedDist> for Requirement {
                     RequirementSource::Url {
                         url: sdist.url.clone(),
                         location,
-                        subdirectory: None,
+                        subdirectory: sdist.subdirectory.clone(),
+                        ext: DistExtension::Source(sdist.ext),
                     }
                 }
-                Dist::Source(SourceDist::Git(sdist)) => {
-                    let git_url = ParsedGitUrl::try_from(sdist.url.to_url())
-                        .expect("urls must be valid at this point");
-                    RequirementSource::Git {
-                        url: sdist.url.clone(),
-                        repository: git_url.url.repository().clone(),
-                        reference: git_url.url.reference().clone(),
-                        subdirectory: git_url.subdirectory,
-                    }
-                }
-                Dist::Source(SourceDist::Path(sdist)) => RequirementSource::Path {
-                    path: sdist.path.clone(),
+                Dist::Source(SourceDist::Git(sdist)) => RequirementSource::Git {
                     url: sdist.url.clone(),
-                    editable: None,
+                    repository: sdist.git.repository().clone(),
+                    reference: sdist.git.reference().clone(),
+                    precise: sdist.git.precise(),
+                    subdirectory: sdist.subdirectory.clone(),
+                },
+                Dist::Source(SourceDist::Path(sdist)) => RequirementSource::Path {
+                    install_path: sdist.install_path.clone(),
+                    lock_path: sdist.lock_path.clone(),
+                    url: sdist.url.clone(),
+                    ext: DistExtension::Source(sdist.ext),
+                },
+                Dist::Source(SourceDist::Directory(sdist)) => RequirementSource::Directory {
+                    install_path: sdist.install_path.clone(),
+                    lock_path: sdist.lock_path.clone(),
+                    url: sdist.url.clone(),
+                    editable: sdist.editable,
                 },
             },
             ResolvedDist::Installed(dist) => RequirementSource::Registry {
@@ -137,8 +212,9 @@ impl From<&ResolvedDist> for Requirement {
         Requirement {
             name: resolved_dist.name().clone(),
             extras: vec![],
-            marker: None,
+            marker: MarkerTree::TRUE,
             source,
+            origin: None,
         }
     }
 }

@@ -4,18 +4,18 @@ use std::path::Path;
 use thiserror::Error;
 
 use platform_tags::PlatformError;
-use uv_interpreter::{Interpreter, PythonEnvironment};
+use uv_python::{Interpreter, PythonEnvironment};
 
-pub use crate::bare::create_bare_venv;
-
-mod bare;
+mod virtualenv;
 
 #[derive(Debug, Error)]
 pub enum Error {
     #[error(transparent)]
-    IO(#[from] io::Error),
-    #[error("Failed to determine python interpreter to use")]
-    InterpreterError(#[from] uv_interpreter::Error),
+    Io(#[from] io::Error),
+    #[error("Failed to determine Python interpreter to use")]
+    Discovery(#[from] uv_python::DiscoveryError),
+    #[error("Failed to determine Python interpreter to use")]
+    InterpreterNotFound(#[from] uv_python::PythonNotFound),
     #[error(transparent)]
     Platform(#[from] PlatformError),
     #[error("Could not find a suitable Python executable for the virtual environment based on the interpreter: {0}")]
@@ -51,10 +51,18 @@ pub fn create_venv(
     interpreter: Interpreter,
     prompt: Prompt,
     system_site_packages: bool,
-    force: bool,
+    allow_existing: bool,
+    relocatable: bool,
 ) -> Result<PythonEnvironment, Error> {
     // Create the virtualenv at the given location.
-    let virtualenv = create_bare_venv(location, &interpreter, prompt, system_site_packages, force)?;
+    let virtualenv = virtualenv::create(
+        location,
+        &interpreter,
+        prompt,
+        system_site_packages,
+        allow_existing,
+        relocatable,
+    )?;
 
     // Create the corresponding `PythonEnvironment`.
     let interpreter = interpreter.with_virtualenv(virtualenv);

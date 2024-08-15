@@ -6,7 +6,6 @@ pub use crate::unnamed::*;
 
 mod confirm;
 mod lookahead;
-pub mod pyproject;
 mod source_tree;
 mod sources;
 mod specification;

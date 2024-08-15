@@ -1,29 +1,28 @@
-use distribution_types::RequirementSource;
+use pypi_types::RequirementSource;
 use rustc_hash::{FxHashMap, FxHashSet};
+use std::sync::Arc;
 
 use pep440_rs::Version;
 use pep508_rs::MarkerEnvironment;
 use uv_normalize::PackageName;
 
-use crate::{DependencyMode, Manifest, Preference};
+use crate::{DependencyMode, Manifest};
 
 /// A set of package versions that are permitted, even if they're marked as yanked by the
 /// relevant index.
 #[derive(Debug, Default, Clone)]
-pub struct AllowedYanks(FxHashMap<PackageName, FxHashSet<Version>>);
+pub struct AllowedYanks(Arc<FxHashMap<PackageName, FxHashSet<Version>>>);
 
 impl AllowedYanks {
     pub fn from_manifest(
         manifest: &Manifest,
-        markers: &MarkerEnvironment,
+        markers: Option<&MarkerEnvironment>,
         dependencies: DependencyMode,
     ) -> Self {
         let mut allowed_yanks = FxHashMap::<PackageName, FxHashSet<Version>>::default();
 
-        for requirement in manifest
-            .requirements(markers, dependencies)
-            .chain(manifest.preferences.iter().map(Preference::requirement))
-        {
+        // Allow yanks for any pinned input requirements.
+        for requirement in manifest.requirements(markers, dependencies) {
             let RequirementSource::Registry { specifier, .. } = &requirement.source else {
                 continue;
             };
@@ -40,12 +39,22 @@ impl AllowedYanks {
                     .insert(specifier.version().clone());
             }
         }
-        Self(allowed_yanks)
+
+        // Allow yanks for any packages that are already pinned in the lockfile.
+        for (name, preferences) in manifest.preferences.iter() {
+            allowed_yanks
+                .entry(name.clone())
+                .or_default()
+                .extend(preferences.map(|(_markers, version)| version.clone()));
+        }
+
+        Self(Arc::new(allowed_yanks))
     }
 
-    /// Returns versions for the given package which are allowed even if marked as yanked by the
-    /// relevant index.
-    pub fn allowed_versions(&self, package_name: &PackageName) -> Option<&FxHashSet<Version>> {
-        self.0.get(package_name)
+    /// Returns `true` if the package-version is allowed, even if it's marked as yanked.
+    pub fn contains(&self, package_name: &PackageName, version: &Version) -> bool {
+        self.0
+            .get(package_name)
+            .map_or(false, |versions| versions.contains(version))
     }
 }

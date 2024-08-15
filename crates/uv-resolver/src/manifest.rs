@@ -1,12 +1,15 @@
-use distribution_types::{LocalEditable, Requirement, Requirements};
 use either::Either;
+use std::borrow::Cow;
+use std::collections::BTreeSet;
+
 use pep508_rs::MarkerEnvironment;
-use pypi_types::Metadata23;
+use pypi_types::Requirement;
 use uv_configuration::{Constraints, Overrides};
-use uv_normalize::PackageName;
+use uv_normalize::{GroupName, PackageName};
 use uv_types::RequestedRequirements;
 
-use crate::{preferences::Preference, DependencyMode, Exclusions};
+use crate::preferences::Preferences;
+use crate::{DependencyMode, Exclusions};
 
 /// A manifest of requirements, constraints, and preferences.
 #[derive(Clone, Debug)]
@@ -20,21 +23,22 @@ pub struct Manifest {
     /// The overrides for the project.
     pub(crate) overrides: Overrides,
 
+    /// The enabled development dependency groups for the project. Dependency groups are global,
+    /// such that any provided groups will be enabled for all requirements.
+    pub(crate) dev: Vec<GroupName>,
+
     /// The preferences for the project.
     ///
     /// These represent "preferred" versions of a given package. For example, they may be the
     /// versions that are already installed in the environment, or already pinned in an existing
     /// lockfile.
-    pub(crate) preferences: Vec<Preference>,
+    pub(crate) preferences: Preferences,
 
     /// The name of the project.
     pub(crate) project: Option<PackageName>,
 
-    /// The editable requirements for the project, which are built in advance.
-    ///
-    /// The requirements of the editables should be included in resolution as if they were
-    /// direct requirements in their own right.
-    pub(crate) editables: Vec<(LocalEditable, Metadata23, Requirements)>,
+    /// Members of the project's workspace.
+    pub(crate) workspace_members: BTreeSet<PackageName>,
 
     /// The installed packages to exclude from consideration during resolution.
     ///
@@ -51,14 +55,14 @@ pub struct Manifest {
 }
 
 impl Manifest {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         requirements: Vec<Requirement>,
         constraints: Constraints,
         overrides: Overrides,
-        preferences: Vec<Preference>,
+        dev: Vec<GroupName>,
+        preferences: Preferences,
         project: Option<PackageName>,
-        editables: Vec<(LocalEditable, Metadata23, Requirements)>,
+        workspace_members: Option<BTreeSet<PackageName>>,
         exclusions: Exclusions,
         lookaheads: Vec<RequestedRequirements>,
     ) -> Self {
@@ -66,9 +70,10 @@ impl Manifest {
             requirements,
             constraints,
             overrides,
+            dev,
             preferences,
             project,
-            editables,
+            workspace_members: workspace_members.unwrap_or_default(),
             exclusions,
             lookaheads,
         }
@@ -79,12 +84,19 @@ impl Manifest {
             requirements,
             constraints: Constraints::default(),
             overrides: Overrides::default(),
-            preferences: Vec::new(),
+            dev: Vec::new(),
+            preferences: Preferences::default(),
             project: None,
-            editables: Vec::new(),
             exclusions: Exclusions::default(),
+            workspace_members: BTreeSet::new(),
             lookaheads: Vec::new(),
         }
+    }
+
+    #[must_use]
+    pub fn with_constraints(mut self, constraints: Constraints) -> Self {
+        self.constraints = constraints;
+        self
     }
 
     /// Return an iterator over all requirements, constraints, and overrides, in priority order,
@@ -97,51 +109,74 @@ impl Manifest {
     /// - Determining which requirements should allow local version specifiers (e.g., `torch==2.2.0+cpu`).
     pub fn requirements<'a>(
         &'a self,
-        markers: &'a MarkerEnvironment,
+        markers: Option<&'a MarkerEnvironment>,
         mode: DependencyMode,
-    ) -> impl Iterator<Item = &Requirement> {
+    ) -> impl Iterator<Item = Cow<'a, Requirement>> + 'a {
+        self.requirements_no_overrides(markers, mode)
+            .chain(self.overrides(markers, mode))
+    }
+
+    /// Like [`Self::requirements`], but without the overrides.
+    pub fn requirements_no_overrides<'a>(
+        &'a self,
+        markers: Option<&'a MarkerEnvironment>,
+        mode: DependencyMode,
+    ) -> impl Iterator<Item = Cow<'a, Requirement>> + 'a {
         match mode {
             // Include all direct and transitive requirements, with constraints and overrides applied.
-            DependencyMode::Transitive => Either::Left( self
-                .lookaheads
-                .iter()
-                .flat_map(|lookahead| {
-                    self.overrides
-                        .apply(lookahead.requirements())
-                        .filter(|requirement| {
-                            requirement.evaluate_markers(markers, lookahead.extras())
-                        })
-                })
-                .chain(self.editables.iter().flat_map(|(editable, _metadata, requirements)| {
-                    self.overrides
-                        .apply(&requirements.dependencies)
-                        .filter(|requirement| {
-                            requirement.evaluate_markers(markers, &editable.extras)
-                        })
-                }))
-                .chain(
-                    self.overrides
-                        .apply(&self.requirements)
-                        .filter(|requirement| requirement.evaluate_markers(markers, &[])),
-                )
-                .chain(
-                    self.constraints
-                        .requirements()
-                        .filter(|requirement| requirement.evaluate_markers(markers, &[])),
-                )
-                .chain(
-                    self.overrides
-                        .requirements()
-                        .filter(|requirement| requirement.evaluate_markers(markers, &[])),
-                ))
-            ,
-
+            DependencyMode::Transitive => Either::Left(
+                self.lookaheads
+                    .iter()
+                    .flat_map(move |lookahead| {
+                        self.overrides
+                            .apply(lookahead.requirements())
+                            .filter(move |requirement| {
+                                requirement.evaluate_markers(markers, lookahead.extras())
+                            })
+                    })
+                    .chain(
+                        self.overrides
+                            .apply(&self.requirements)
+                            .filter(move |requirement| requirement.evaluate_markers(markers, &[])),
+                    )
+                    .chain(
+                        self.constraints
+                            .requirements()
+                            .filter(move |requirement| requirement.evaluate_markers(markers, &[]))
+                            .map(Cow::Borrowed),
+                    ),
+            ),
             // Include direct requirements, with constraints and overrides applied.
             DependencyMode::Direct => Either::Right(
-                self.overrides.apply(&   self.requirements)
-                .chain(self.constraints.requirements())
-                .chain(self.overrides.requirements())
-                .filter(|requirement| requirement.evaluate_markers(markers, &[]))),
+                self.overrides
+                    .apply(&self.requirements)
+                    .chain(self.constraints.requirements().map(Cow::Borrowed))
+                    .filter(move |requirement| requirement.evaluate_markers(markers, &[])),
+            ),
+        }
+    }
+
+    /// Only the overrides from [`Self::requirements`].
+    pub fn overrides<'a>(
+        &'a self,
+        markers: Option<&'a MarkerEnvironment>,
+        mode: DependencyMode,
+    ) -> impl Iterator<Item = Cow<'a, Requirement>> + 'a {
+        match mode {
+            // Include all direct and transitive requirements, with constraints and overrides applied.
+            DependencyMode::Transitive => Either::Left(
+                self.overrides
+                    .requirements()
+                    .filter(move |requirement| requirement.evaluate_markers(markers, &[]))
+                    .map(Cow::Borrowed),
+            ),
+            // Include direct requirements, with constraints and overrides applied.
+            DependencyMode::Direct => Either::Right(
+                self.overrides
+                    .requirements()
+                    .filter(move |requirement| requirement.evaluate_markers(markers, &[]))
+                    .map(Cow::Borrowed),
+            ),
         }
     }
 
@@ -157,9 +192,9 @@ impl Manifest {
     ///   the `lowest-direct` strategy is in use.
     pub fn user_requirements<'a>(
         &'a self,
-        markers: &'a MarkerEnvironment,
+        markers: Option<&'a MarkerEnvironment>,
         mode: DependencyMode,
-    ) -> impl Iterator<Item = &PackageName> {
+    ) -> impl Iterator<Item = Cow<'a, Requirement>> + 'a {
         match mode {
             // Include direct requirements, dependencies of editables, and transitive dependencies
             // of local packages.
@@ -167,38 +202,41 @@ impl Manifest {
                 self.lookaheads
                     .iter()
                     .filter(|lookahead| lookahead.direct())
-                    .flat_map(|lookahead| {
+                    .flat_map(move |lookahead| {
                         self.overrides
                             .apply(lookahead.requirements())
-                            .filter(|requirement| {
+                            .filter(move |requirement| {
                                 requirement.evaluate_markers(markers, lookahead.extras())
                             })
                     })
-                    .chain(self.editables.iter().flat_map(
-                        |(editable, _metadata, uv_requirements)| {
-                            self.overrides.apply(&uv_requirements.dependencies).filter(
-                                |requirement| {
-                                    requirement.evaluate_markers(markers, &editable.extras)
-                                },
-                            )
-                        },
-                    ))
                     .chain(
                         self.overrides
                             .apply(&self.requirements)
-                            .filter(|requirement| requirement.evaluate_markers(markers, &[])),
-                    )
-                    .map(|requirement| &requirement.name),
+                            .filter(move |requirement| requirement.evaluate_markers(markers, &[])),
+                    ),
             ),
 
             // Restrict to the direct requirements.
             DependencyMode::Direct => Either::Right(
                 self.overrides
                     .apply(self.requirements.iter())
-                    .filter(|requirement| requirement.evaluate_markers(markers, &[]))
-                    .map(|requirement| &requirement.name),
+                    .filter(move |requirement| requirement.evaluate_markers(markers, &[])),
             ),
         }
+    }
+
+    /// Returns an iterator over the direct requirements, with overrides applied.
+    ///
+    /// At time of writing, this is used for:
+    /// - Determining which packages should have development dependencies included in the
+    ///   resolution (assuming the user enabled development dependencies).
+    pub fn direct_requirements<'a>(
+        &'a self,
+        markers: Option<&'a MarkerEnvironment>,
+    ) -> impl Iterator<Item = Cow<'a, Requirement>> + 'a {
+        self.overrides
+            .apply(self.requirements.iter())
+            .filter(move |requirement| requirement.evaluate_markers(markers, &[]))
     }
 
     /// Apply the overrides and constraints to a set of requirements.
@@ -208,7 +246,12 @@ impl Manifest {
     pub fn apply<'a>(
         &'a self,
         requirements: impl IntoIterator<Item = &'a Requirement>,
-    ) -> impl Iterator<Item = &Requirement> {
+    ) -> impl Iterator<Item = Cow<'a, Requirement>> {
         self.constraints.apply(self.overrides.apply(requirements))
+    }
+
+    /// Returns the number of input requirements.
+    pub fn num_requirements(&self) -> usize {
+        self.requirements.len()
     }
 }

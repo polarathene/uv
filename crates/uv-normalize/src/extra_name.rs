@@ -6,15 +6,15 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::{validate_and_normalize_owned, validate_and_normalize_ref, InvalidNameError};
 
-/// The normalized name of an extra dependency group.
+/// The normalized name of an extra dependency.
 ///
-/// Converts the name to lowercase and collapses any run of the characters `-`, `_` and `.`
-/// down to a single `-`, e.g., `---`, `.`, and `__` all get converted to just `-`.
+/// Converts the name to lowercase and collapses runs of `-`, `_`, and `.` down to a single `-`.
+/// For example, `---`, `.`, and `__` are all converted to a single `-`.
 ///
 /// See:
 /// - <https://peps.python.org/pep-0685/#specification/>
 /// - <https://packaging.python.org/en/latest/specifications/name-normalization/>
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct ExtraName(String);
 

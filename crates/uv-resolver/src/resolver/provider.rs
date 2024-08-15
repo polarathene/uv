@@ -1,20 +1,16 @@
 use std::future::Future;
 
-use anyhow::Result;
-
 use distribution_types::{Dist, IndexLocations};
 use platform_tags::Tags;
-use uv_client::RegistryClient;
-use uv_configuration::{NoBinary, NoBuild};
+use uv_configuration::BuildOptions;
 use uv_distribution::{ArchiveMetadata, DistributionDatabase};
 use uv_normalize::PackageName;
 use uv_types::{BuildContext, HashStrategy};
 
 use crate::flat_index::FlatIndex;
-use crate::python_requirement::PythonRequirement;
 use crate::version_map::VersionMap;
 use crate::yanks::AllowedYanks;
-use crate::ExcludeNewer;
+use crate::{ExcludeNewer, RequiresPython};
 
 pub type PackageVersionsResult = Result<VersionsResponse, uv_client::Error>;
 pub type WheelMetadataResult = Result<MetadataResponse, uv_distribution::Error>;
@@ -36,6 +32,8 @@ pub enum VersionsResponse {
 pub enum MetadataResponse {
     /// The wheel metadata was found and parsed successfully.
     Found(ArchiveMetadata),
+    /// The wheel metadata was not found.
+    MissingMetadata,
     /// The wheel metadata was found, but could not be parsed.
     InvalidMetadata(Box<pypi_types::MetadataError>),
     /// The wheel metadata was found, but the metadata was inconsistent.
@@ -46,12 +44,12 @@ pub enum MetadataResponse {
     Offline,
 }
 
-pub trait ResolverProvider: Send + Sync {
+pub trait ResolverProvider {
     /// Get the version map for a package.
     fn get_package_versions<'io>(
         &'io self,
         package_name: &'io PackageName,
-    ) -> impl Future<Output = PackageVersionsResult> + Send + 'io;
+    ) -> impl Future<Output = PackageVersionsResult> + 'io;
 
     /// Get the metadata for a distribution.
     ///
@@ -61,7 +59,7 @@ pub trait ResolverProvider: Send + Sync {
     fn get_or_build_wheel_metadata<'io>(
         &'io self,
         dist: &'io Dist,
-    ) -> impl Future<Output = WheelMetadataResult> + Send + 'io;
+    ) -> impl Future<Output = WheelMetadataResult> + 'io;
 
     fn index_locations(&self) -> &IndexLocations;
 
@@ -72,61 +70,57 @@ pub trait ResolverProvider: Send + Sync {
 
 /// The main IO backend for the resolver, which does cached requests network requests using the
 /// [`RegistryClient`] and [`DistributionDatabase`].
-pub struct DefaultResolverProvider<'a, Context: BuildContext + Send + Sync> {
+pub struct DefaultResolverProvider<'a, Context: BuildContext> {
     /// The [`DistributionDatabase`] used to build source distributions.
     fetcher: DistributionDatabase<'a, Context>,
-    /// The [`RegistryClient`] used to query the index.
-    client: RegistryClient,
     /// These are the entries from `--find-links` that act as overrides for index responses.
     flat_index: FlatIndex,
-    tags: Tags,
-    python_requirement: PythonRequirement,
+    tags: Option<Tags>,
+    requires_python: Option<RequiresPython>,
     allowed_yanks: AllowedYanks,
     hasher: HashStrategy,
     exclude_newer: Option<ExcludeNewer>,
-    no_binary: NoBinary,
-    no_build: NoBuild,
+    build_options: &'a BuildOptions,
 }
 
-impl<'a, Context: BuildContext + Send + Sync> DefaultResolverProvider<'a, Context> {
+impl<'a, Context: BuildContext> DefaultResolverProvider<'a, Context> {
     /// Reads the flat index entries and builds the provider.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        client: &'a RegistryClient,
         fetcher: DistributionDatabase<'a, Context>,
         flat_index: &'a FlatIndex,
-        tags: &'a Tags,
-        python_requirement: PythonRequirement,
+        tags: Option<&'a Tags>,
+        requires_python: Option<&'a RequiresPython>,
         allowed_yanks: AllowedYanks,
         hasher: &'a HashStrategy,
         exclude_newer: Option<ExcludeNewer>,
-        no_binary: &'a NoBinary,
-        no_build: &'a NoBuild,
+        build_options: &'a BuildOptions,
     ) -> Self {
         Self {
             fetcher,
-            client: client.clone(),
             flat_index: flat_index.clone(),
-            tags: tags.clone(),
-            python_requirement,
+            tags: tags.cloned(),
+            requires_python: requires_python.cloned(),
             allowed_yanks,
             hasher: hasher.clone(),
             exclude_newer,
-            no_binary: no_binary.clone(),
-            no_build: no_build.clone(),
+            build_options,
         }
     }
 }
 
-impl<'a, Context: BuildContext + Send + Sync> ResolverProvider
-    for DefaultResolverProvider<'a, Context>
-{
+impl<'a, Context: BuildContext> ResolverProvider for DefaultResolverProvider<'a, Context> {
     /// Make a "Simple API" request for the package and convert the result to a [`VersionMap`].
     async fn get_package_versions<'io>(
         &'io self,
         package_name: &'io PackageName,
     ) -> PackageVersionsResult {
-        match self.client.simple(package_name).await {
+        let result = self
+            .fetcher
+            .client()
+            .managed(|client| client.simple(package_name))
+            .await;
+
+        match result {
             Ok(results) => Ok(VersionsResponse::Found(
                 results
                     .into_iter()
@@ -135,14 +129,13 @@ impl<'a, Context: BuildContext + Send + Sync> ResolverProvider
                             metadata,
                             package_name,
                             &index,
-                            &self.tags,
-                            &self.python_requirement,
+                            self.tags.as_ref(),
+                            self.requires_python.as_ref(),
                             &self.allowed_yanks,
                             &self.hasher,
                             self.exclude_newer.as_ref(),
                             self.flat_index.get(package_name).cloned(),
-                            &self.no_binary,
-                            &self.no_build,
+                            self.build_options,
                         )
                     })
                     .collect(),

@@ -41,7 +41,8 @@ Functionality for detecting the current platform (operating system, architecture
 
 ## [platform-tags](./platform-tags)
 
-Functionality for parsing and inferring Python platform tags as per [PEP 425](https://peps.python.org/pep-0425/).
+Functionality for parsing and inferring Python platform tags as per
+[PEP 425](https://peps.python.org/pep-0425/).
 
 ## [uv](./uv)
 
@@ -70,8 +71,8 @@ Implements the traits defined in `uv-types`.
 
 ## [uv-distribution](./uv-distribution)
 
-Client for interacting with built distributions (wheels) and source distributions (sdists).
-Capable of fetching metadata, distribution contents, etc.
+Client for interacting with built distributions (wheels) and source distributions (sdists). Capable
+of fetching metadata, distribution contents, etc.
 
 ## [uv-extract](./uv-extract)
 
@@ -89,7 +90,7 @@ Functionality for interacting with Git repositories.
 
 Functionality for installing Python packages into a virtual environment.
 
-## [uv-interpreter](./uv-interpreter)
+## [uv-python](./uv-python)
 
 Functionality for detecting and leveraging the current Python interpreter.
 
@@ -109,6 +110,10 @@ Utilities for reading package requirements from `pyproject.toml` and `requiremen
 
 Functionality for resolving Python packages and their dependencies.
 
+## [uv-shell](./uv-shell)
+
+Utilities for detecting and manipulating shell environments.
+
 ## [uv-types](./uv-types)
 
 Shared traits for uv, to avoid circular dependencies.
@@ -124,6 +129,10 @@ A `venv` replacement to create virtual environments in Rust.
 ## [uv-warnings](./uv-warnings)
 
 User-facing warnings for uv.
+
+## [uv-workspace](./uv-workspace)
+
+Workspace abstractions for uv.
 
 ## [requirements-txt](./requirements-txt)
 

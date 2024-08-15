@@ -23,32 +23,10 @@ RequirementsTxt {
                             ),
                         ),
                     ),
-                    marker: Some(
-                        And(
-                            [
-                                Expression(
-                                    MarkerExpression {
-                                        l_value: MarkerEnvVersion(
-                                            PythonVersion,
-                                        ),
-                                        operator: GreaterEqual,
-                                        r_value: QuotedString(
-                                            "3.8",
-                                        ),
-                                    },
-                                ),
-                                Expression(
-                                    MarkerExpression {
-                                        l_value: MarkerEnvVersion(
-                                            PythonVersion,
-                                        ),
-                                        operator: LessThan,
-                                        r_value: QuotedString(
-                                            "4.0",
-                                        ),
-                                    },
-                                ),
-                            ],
+                    marker: python_version >= '3.8' and python_version < '4.0',
+                    origin: Some(
+                        File(
+                            "<REQUIREMENTS_DIR>/poetry-with-hashes.txt",
                         ),
                     ),
                 },
@@ -76,32 +54,10 @@ RequirementsTxt {
                             ),
                         ),
                     ),
-                    marker: Some(
-                        And(
-                            [
-                                Expression(
-                                    MarkerExpression {
-                                        l_value: MarkerEnvVersion(
-                                            PythonVersion,
-                                        ),
-                                        operator: GreaterEqual,
-                                        r_value: QuotedString(
-                                            "3.8",
-                                        ),
-                                    },
-                                ),
-                                Expression(
-                                    MarkerExpression {
-                                        l_value: MarkerEnvVersion(
-                                            PythonVersion,
-                                        ),
-                                        operator: LessThan,
-                                        r_value: QuotedString(
-                                            "4",
-                                        ),
-                                    },
-                                ),
-                            ],
+                    marker: python_version >= '3.8' and python_version < '4.0',
+                    origin: Some(
+                        File(
+                            "<REQUIREMENTS_DIR>/poetry-with-hashes.txt",
                         ),
                     ),
                 },
@@ -129,43 +85,10 @@ RequirementsTxt {
                             ),
                         ),
                     ),
-                    marker: Some(
-                        And(
-                            [
-                                Expression(
-                                    MarkerExpression {
-                                        l_value: MarkerEnvVersion(
-                                            PythonVersion,
-                                        ),
-                                        operator: GreaterEqual,
-                                        r_value: QuotedString(
-                                            "3.8",
-                                        ),
-                                    },
-                                ),
-                                Expression(
-                                    MarkerExpression {
-                                        l_value: MarkerEnvVersion(
-                                            PythonVersion,
-                                        ),
-                                        operator: LessThan,
-                                        r_value: QuotedString(
-                                            "4",
-                                        ),
-                                    },
-                                ),
-                                Expression(
-                                    MarkerExpression {
-                                        l_value: MarkerEnvString(
-                                            PlatformSystem,
-                                        ),
-                                        operator: Equal,
-                                        r_value: QuotedString(
-                                            "Windows",
-                                        ),
-                                    },
-                                ),
-                            ],
+                    marker: python_version >= '3.8' and python_version < '4.0' and platform_system == 'Windows',
+                    origin: Some(
+                        File(
+                            "<REQUIREMENTS_DIR>/poetry-with-hashes.txt",
                         ),
                     ),
                 },
@@ -193,32 +116,10 @@ RequirementsTxt {
                             ),
                         ),
                     ),
-                    marker: Some(
-                        And(
-                            [
-                                Expression(
-                                    MarkerExpression {
-                                        l_value: MarkerEnvVersion(
-                                            PythonVersion,
-                                        ),
-                                        operator: GreaterEqual,
-                                        r_value: QuotedString(
-                                            "3.8",
-                                        ),
-                                    },
-                                ),
-                                Expression(
-                                    MarkerExpression {
-                                        l_value: MarkerEnvVersion(
-                                            PythonVersion,
-                                        ),
-                                        operator: LessThan,
-                                        r_value: QuotedString(
-                                            "4.0",
-                                        ),
-                                    },
-                                ),
-                            ],
+                    marker: python_version >= '3.8' and python_version < '4.0',
+                    origin: Some(
+                        File(
+                            "<REQUIREMENTS_DIR>/poetry-with-hashes.txt",
                         ),
                     ),
                 },
@@ -247,32 +148,10 @@ RequirementsTxt {
                             ),
                         ),
                     ),
-                    marker: Some(
-                        And(
-                            [
-                                Expression(
-                                    MarkerExpression {
-                                        l_value: MarkerEnvVersion(
-                                            PythonVersion,
-                                        ),
-                                        operator: GreaterEqual,
-                                        r_value: QuotedString(
-                                            "3.8",
-                                        ),
-                                    },
-                                ),
-                                Expression(
-                                    MarkerExpression {
-                                        l_value: MarkerEnvVersion(
-                                            PythonVersion,
-                                        ),
-                                        operator: LessThan,
-                                        r_value: QuotedString(
-                                            "4.0",
-                                        ),
-                                    },
-                                ),
-                            ],
+                    marker: python_version >= '3.8' and python_version < '4.0',
+                    origin: Some(
+                        File(
+                            "<REQUIREMENTS_DIR>/poetry-with-hashes.txt",
                         ),
                     ),
                 },

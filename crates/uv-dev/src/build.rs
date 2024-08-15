@@ -4,17 +4,21 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::Parser;
 use fs_err as fs;
+use rustc_hash::FxHashMap;
 
 use distribution_types::IndexLocations;
-use rustc_hash::FxHashMap;
 use uv_build::{SourceBuild, SourceBuildContext};
 use uv_cache::{Cache, CacheArgs};
 use uv_client::RegistryClientBuilder;
-use uv_configuration::{BuildKind, ConfigSettings, NoBinary, NoBuild, SetupPyStrategy};
+use uv_configuration::{
+    BuildKind, BuildOptions, Concurrency, ConfigSettings, IndexStrategy, PreviewMode,
+    SetupPyStrategy, SourceStrategy,
+};
 use uv_dispatch::BuildDispatch;
-use uv_interpreter::PythonEnvironment;
+use uv_git::GitResolver;
+use uv_python::{EnvironmentPreference, PythonEnvironment, PythonRequest};
 use uv_resolver::{FlatIndex, InMemoryIndex};
-use uv_types::{BuildContext, BuildIsolation, InFlight};
+use uv_types::{BuildIsolation, InFlight};
 
 #[derive(Parser)]
 pub(crate) struct BuildArgs {
@@ -51,37 +55,54 @@ pub(crate) async fn build(args: BuildArgs) -> Result<PathBuf> {
         BuildKind::Wheel
     };
 
-    let cache = Cache::try_from(args.cache_args)?;
+    let cache = Cache::try_from(args.cache_args)?.init()?;
 
-    let venv = PythonEnvironment::from_virtualenv(&cache)?;
     let client = RegistryClientBuilder::new(cache.clone()).build();
-    let index_urls = IndexLocations::default();
-    let flat_index = FlatIndex::default();
-    let index = InMemoryIndex::default();
-    let setup_py = SetupPyStrategy::default();
-    let in_flight = InFlight::default();
+    let concurrency = Concurrency::default();
     let config_settings = ConfigSettings::default();
+    let exclude_newer = None;
+    let flat_index = FlatIndex::default();
+    let git = GitResolver::default();
+    let in_flight = InFlight::default();
+    let index = InMemoryIndex::default();
+    let index_urls = IndexLocations::default();
+    let index_strategy = IndexStrategy::default();
+    let setup_py = SetupPyStrategy::default();
+    let sources = SourceStrategy::default();
+    let python = PythonEnvironment::find(
+        &PythonRequest::default(),
+        EnvironmentPreference::OnlyVirtual,
+        &cache,
+    )?;
+    let build_options = BuildOptions::default();
+    let build_constraints = [];
 
     let build_dispatch = BuildDispatch::new(
         &client,
         &cache,
-        venv.interpreter(),
+        &build_constraints,
+        python.interpreter(),
         &index_urls,
         &flat_index,
         &index,
+        &git,
         &in_flight,
+        index_strategy,
         setup_py,
         &config_settings,
         BuildIsolation::Isolated,
         install_wheel_rs::linker::LinkMode::default(),
-        &NoBuild::None,
-        &NoBinary::None,
+        &build_options,
+        exclude_newer,
+        sources,
+        concurrency,
+        PreviewMode::Enabled,
     );
 
     let builder = SourceBuild::setup(
         &args.sdist,
         args.subdirectory.as_deref(),
-        build_dispatch.interpreter(),
+        python.interpreter(),
         &build_dispatch,
         SourceBuildContext::default(),
         args.sdist.display().to_string(),
@@ -90,6 +111,7 @@ pub(crate) async fn build(args: BuildArgs) -> Result<PathBuf> {
         BuildIsolation::Isolated,
         build_kind,
         FxHashMap::default(),
+        concurrency.builds,
     )
     .await?;
     Ok(wheel_dir.join(builder.build_wheel(&wheel_dir).await?))

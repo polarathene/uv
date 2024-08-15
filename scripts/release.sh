@@ -2,28 +2,24 @@
 # Prepare for a release
 #
 # All additional options are passed to `rooster`
-#
-# See `scripts/release/` for supporting files.
 set -eu
 
 script_root="$(realpath "$(dirname "$0")")"
 project_root="$(dirname "$script_root")"
 
-cd "$script_root/release"
-echo "Setting up a temporary environment..."
-uv venv
-
-source ".venv/bin/activate"
-uv pip install -r requirements.txt
-
 echo "Updating metadata with rooster..."
 cd "$project_root"
-rooster release "$@"
+
+# Update the preview changelog
+uv tool run --from 'rooster-blue>=0.0.7' --python 3.12 -- \
+    rooster release "$@" \
+    --only-sections preview \
+    --changelog-file PREVIEW-CHANGELOG.md \
+    --no-update-pyproject --no-update-version-files
+
+# Update the real changelog
+uv tool run --from 'rooster-blue>=0.0.7' --python 3.12 -- \
+    rooster release "$@" --without-sections preview
 
 echo "Updating lockfile..."
 cargo update -p uv
-
-echo "Generating contributors list..."
-echo ""
-echo ""
-rooster contributors --quiet

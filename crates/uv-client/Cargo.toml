@@ -3,6 +3,9 @@ name = "uv-client"
 version = "0.0.1"
 edition = "2021"
 
+[lints]
+workspace = true
+
 [dependencies]
 cache-key = { workspace = true }
 distribution-filename = { workspace = true }
@@ -29,6 +32,7 @@ fs-err = { workspace = true, features = ["tokio"] }
 futures = { workspace = true }
 html-escape = { workspace = true }
 http = { workspace = true }
+itertools = { workspace = true }
 reqwest = { workspace = true }
 reqwest-middleware = { workspace = true }
 reqwest-retry = { workspace = true }
@@ -37,7 +41,6 @@ rmp-serde = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sys-info = { workspace = true }
-tempfile = { workspace = true }
 thiserror = { workspace = true }
 tl = { workspace = true }
 tokio = { workspace = true }

@@ -12,7 +12,12 @@ RequirementsTxt {
                     ),
                     extras: [],
                     version_or_url: None,
-                    marker: None,
+                    marker: true,
+                    origin: Some(
+                        File(
+                            "<REQUIREMENTS_DIR>/whitespace.txt",
+                        ),
+                    ),
                 },
             ),
             hashes: [],
@@ -30,29 +35,60 @@ RequirementsTxt {
                     ],
                     version_or_url: Some(
                         Url(
-                            VerbatimUrl {
-                                url: Url {
-                                    scheme: "https",
-                                    cannot_be_a_base: false,
-                                    username: "",
-                                    password: None,
-                                    host: Some(
-                                        Domain(
-                                            "github.com",
-                                        ),
-                                    ),
-                                    port: None,
-                                    path: "/pandas-dev/pandas",
-                                    query: None,
-                                    fragment: None,
-                                },
-                                given: Some(
-                                    "https://github.com/pandas-dev/pandas",
+                            VerbatimParsedUrl {
+                                parsed_url: Git(
+                                    ParsedGitUrl {
+                                        url: GitUrl {
+                                            repository: Url {
+                                                scheme: "https",
+                                                cannot_be_a_base: false,
+                                                username: "",
+                                                password: None,
+                                                host: Some(
+                                                    Domain(
+                                                        "github.com",
+                                                    ),
+                                                ),
+                                                port: None,
+                                                path: "/pandas-dev/pandas.git",
+                                                query: None,
+                                                fragment: None,
+                                            },
+                                            reference: DefaultBranch,
+                                            precise: None,
+                                        },
+                                        subdirectory: None,
+                                    },
                                 ),
+                                verbatim: VerbatimUrl {
+                                    url: Url {
+                                        scheme: "git+https",
+                                        cannot_be_a_base: false,
+                                        username: "",
+                                        password: None,
+                                        host: Some(
+                                            Domain(
+                                                "github.com",
+                                            ),
+                                        ),
+                                        port: None,
+                                        path: "/pandas-dev/pandas.git",
+                                        query: None,
+                                        fragment: None,
+                                    },
+                                    given: Some(
+                                        "git+https://github.com/pandas-dev/pandas.git",
+                                    ),
+                                },
                             },
                         ),
                     ),
-                    marker: None,
+                    marker: true,
+                    origin: Some(
+                        File(
+                            "<REQUIREMENTS_DIR>/whitespace.txt",
+                        ),
+                    ),
                 },
             ),
             hashes: [],

@@ -23,7 +23,12 @@ RequirementsTxt {
                             ),
                         ),
                     ),
-                    marker: None,
+                    marker: true,
+                    origin: Some(
+                        File(
+                            "<REQUIREMENTS_DIR>/constraints-a.txt",
+                        ),
+                    ),
                 },
             ),
             hashes: [],
@@ -47,7 +52,12 @@ RequirementsTxt {
                     ),
                 ),
             ),
-            marker: None,
+            marker: true,
+            origin: Some(
+                File(
+                    "<REQUIREMENTS_DIR>/constraints-b.txt",
+                ),
+            ),
         },
         Requirement {
             name: PackageName(
@@ -66,7 +76,12 @@ RequirementsTxt {
                     ),
                 ),
             ),
-            marker: None,
+            marker: true,
+            origin: Some(
+                File(
+                    "<REQUIREMENTS_DIR>/constraints-b.txt",
+                ),
+            ),
         },
     ],
     editables: [],

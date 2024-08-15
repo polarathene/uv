@@ -6,7 +6,8 @@ use pep508_rs::VerbatimUrl;
 use pypi_types::HashDigest;
 use uv_cache::{Cache, CacheBucket, CacheEntry};
 
-use crate::{Archive, HttpArchivePointer, LocalArchivePointer};
+use crate::archive::Archive;
+use crate::{HttpArchivePointer, LocalArchivePointer};
 
 #[derive(Debug, Clone)]
 pub struct CachedWheel {
@@ -54,6 +55,17 @@ impl CachedWheel {
             url,
             path: self.entry.into_path_buf(),
             editable: false,
+            hashes: self.hashes,
+        }
+    }
+
+    /// Convert a [`CachedWheel`] into an editable [`CachedDirectUrlDist`].
+    pub fn into_editable(self, url: VerbatimUrl) -> CachedDirectUrlDist {
+        CachedDirectUrlDist {
+            filename: self.filename,
+            url,
+            path: self.entry.into_path_buf(),
+            editable: true,
             hashes: self.hashes,
         }
     }

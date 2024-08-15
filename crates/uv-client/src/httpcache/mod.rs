@@ -5,11 +5,11 @@ This implementation was guided by the following things:
 
 * RFCs 9110 and 9111.
 * The `http-cache-semantics` crate. (The implementation here is completely
-different, but the source of `http-cache-semantics` helped guide the
-implementation here and understanding of HTTP caching.)
+  different, but the source of `http-cache-semantics` helped guide the
+  implementation here and understanding of HTTP caching.)
 * A desire for our cache policy to support zero-copy deserialization. That
-is, we want the cached response fast path (where no revalidation request is
-necessary) to avoid any costly deserialization for the cache policy at all.
+  is, we want the cached response fast path (where no revalidation request is
+  necessary) to avoid any costly deserialization for the cache policy at all.
 
 # Flow
 
@@ -33,13 +33,13 @@ the server for a fresh response. In our case, the main utility of `max-age` is
 two fold:
 
 * PyPI sets a `max-age` of 600 seconds (10 minutes) on its responses. As long
-as our cached responses have an age less than this, we can completely avoid
-talking to PyPI at all when we need access to the full set of versions for a
-package.
+  as our cached responses have an age less than this, we can completely avoid
+  talking to PyPI at all when we need access to the full set of versions for a
+  package.
 * Most other assets, like wheels, are forever immutable. They will never
-change. So servers will typically set a very high `max-age`, which means we
-will almost never need to ask the server for permission to reuse our cached
-wheel.
+  change. So servers will typically set a very high `max-age`, which means we
+  will almost never need to ask the server for permission to reuse our cached
+  wheel.
 
 When a cached response exceeds the `max-age` configured on a response, then
 we call that response stale. Generally speaking, we won't return responses
@@ -117,22 +117,22 @@ This is a little extra cost, but the idea is that a `CachePolicy` (not an
 `ArchivedCachePolicy`) should only be used in the slower path (i.e., when you
 actually need to make an HTTP request).
 
-[`rkyv::vec::ArchivedVec`]: hhttps://docs.rs/rkyv/0.7.43/rkyv/vec/struct.ArchivedVec.html
+[`rkyv::vec::ArchivedVec`]: https://docs.rs/rkyv/0.7.43/rkyv/vec/struct.ArchivedVec.html
 [`rkyv::string::ArchivedString`]: https://docs.rs/rkyv/0.7.43/rkyv/string/struct.ArchivedString.html
 
 # Additional reading
 
-* Short introduction to `Cache-Control`: https://csswizardry.com/2019/03/cache-control-for-civilians/
-* Caching best practcies: https://jakearchibald.com/2016/caching-best-practices/
-* Overview of HTTP caching: https://developer.mozilla.org/en-US/docs/Web/HTTP/Caching
-* MDN docs for `Cache-Control`: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cache-Control
-* THe 1997 RFC for HTTP 1.1: https://www.rfc-editor.org/rfc/rfc2068#section-13
-* The 1999 update to HTTP 1.1: https://www.rfc-editor.org/rfc/rfc2616.html#section-13
-* The "stale content" cache-control extension: https://httpwg.org/specs/rfc5861.html
-* HTTP 1.1 caching (superseded by RFC 9111): https://httpwg.org/specs/rfc7234.html
-* The "immutable" cache-control extension: https://httpwg.org/specs/rfc8246.html
-* HTTP semantics (If-None-Match, etc.): https://www.rfc-editor.org/rfc/rfc9110#section-8.8.3
-* HTTP caching (obsoletes RFC 7234): https://www.rfc-editor.org/rfc/rfc9111.html
+* Short introduction to `Cache-Control`: <https://csswizardry.com/2019/03/cache-control-for-civilians/>
+* Caching best practcies: <https://jakearchibald.com/2016/caching-best-practices/>
+* Overview of HTTP caching: <https://developer.mozilla.org/en-US/docs/Web/HTTP/Caching>
+* MDN docs for `Cache-Control`: <https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cache-Control>
+* The 1997 RFC for HTTP 1.1: <https://www.rfc-editor.org/rfc/rfc2068#section-13>
+* The 1999 update to HTTP 1.1: <https://www.rfc-editor.org/rfc/rfc2616.html#section-13>
+* The "stale content" cache-control extension: <https://httpwg.org/specs/rfc5861.html>
+* HTTP 1.1 caching (superseded by RFC 9111): <https://httpwg.org/specs/rfc7234.html>
+* The "immutable" cache-control extension: <https://httpwg.org/specs/rfc8246.html>
+* HTTP semantics (If-None-Match, etc.): <https://www.rfc-editor.org/rfc/rfc9110#section-8.8.3>
+* HTTP caching (obsoletes RFC 7234): <https://www.rfc-editor.org/rfc/rfc9111.html>
 */
 
 use std::time::{Duration, SystemTime};
@@ -150,7 +150,9 @@ mod control;
 /// At time of writing, we don't expose any way of modifying these since I
 /// suspect we won't ever need to. We split them out into their own type so
 /// that they can be shared between `CachePolicyBuilder` and `CachePolicy`.
-#[derive(Clone, Debug, rkyv::Archive, rkyv::CheckBytes, rkyv::Deserialize, rkyv::Serialize)]
+#[derive(
+    Clone, Debug, Default, rkyv::Archive, rkyv::CheckBytes, rkyv::Deserialize, rkyv::Serialize,
+)]
 // Since `CacheConfig` is so simple, we can use itself as the archived type.
 // But note that this will fall apart if even something like an Option<u8> is
 // added.
@@ -158,21 +160,6 @@ mod control;
 #[repr(C)]
 struct CacheConfig {
     shared: bool,
-    heuristic_percent: u8,
-}
-
-impl Default for CacheConfig {
-    fn default() -> Self {
-        Self {
-            // The caching uv does ought to be considered
-            // private.
-            shared: false,
-            // This is only used to heuristically guess at a freshness lifetime
-            // when other indicators (such as `max-age` and `Expires` are
-            // absent.
-            heuristic_percent: 10,
-        }
-    }
 }
 
 /// A builder for constructing a `CachePolicy`.
@@ -295,14 +282,14 @@ impl ArchivedCachePolicy {
     /// This returns one of three possible behaviors:
     ///
     /// 1. The cached response is still fresh, and the caller may return
-    /// the cached response without issuing an HTTP requests.
+    ///    the cached response without issuing an HTTP requests.
     /// 2. The cached response is stale. The caller should send a re-validation
-    /// request and then call `CachePolicy::after_response` to determine whether
-    /// the cached response is actually fresh, or if it's stale and needs to
-    /// be updated.
+    ///    request and then call `CachePolicy::after_response` to determine whether
+    ///    the cached response is actually fresh, or if it's stale and needs to
+    ///    be updated.
     /// 3. The given request does not match the cache policy identification.
-    /// Generally speaking, this usually implies a bug with the cache in that
-    /// it loaded a cache policy that does not match the request.
+    ///    Generally speaking, this usually implies a bug with the cache in that
+    ///    it loaded a cache policy that does not match the request.
     ///
     /// In the case of (2), the given request is modified in place such that
     /// it is suitable as a revalidation request.
@@ -934,23 +921,55 @@ impl ArchivedCachePolicy {
     fn freshness_lifetime(&self) -> Duration {
         if self.config.shared {
             if let Some(&s_maxage) = self.response.headers.cc.s_maxage_seconds.as_ref() {
-                return Duration::from_secs(s_maxage);
+                let duration = Duration::from_secs(s_maxage);
+                tracing::trace!(
+                    "freshness lifetime found via shared \
+                     cache-control max age setting: {duration:?}"
+                );
+                return duration;
             }
         }
         if let Some(&max_age) = self.response.headers.cc.max_age_seconds.as_ref() {
-            return Duration::from_secs(max_age);
+            let duration = Duration::from_secs(max_age);
+            tracing::trace!(
+                "freshness lifetime found via cache-control max age setting: {duration:?}"
+            );
+            return duration;
         }
         if let Some(&expires) = self.response.headers.expires_unix_timestamp.as_ref() {
-            return Duration::from_secs(expires.saturating_sub(self.response.header_date()));
+            let duration = Duration::from_secs(expires.saturating_sub(self.response.header_date()));
+            tracing::trace!("freshness lifetime found via expires header: {duration:?}");
+            return duration;
         }
-        if let Some(&last_modified) = self.response.headers.last_modified_unix_timestamp.as_ref() {
-            let interval = self.response.header_date().saturating_sub(last_modified);
-            let percent = u64::from(self.config.heuristic_percent);
-            return Duration::from_secs(interval.saturating_mul(percent).saturating_div(100));
+        if self.response.headers.last_modified_unix_timestamp.is_some() {
+            // We previously computed this heuristic freshness lifetime by
+            // looking at the difference between the last modified header and
+            // the response's date header. We then asserted that the cached
+            // response ought to be "fresh" for 10% of that interval.
+            //
+            // It turns out that this can result in very long freshness
+            // lifetimes[1] that lead to uv caching too aggressively.
+            //
+            // Since PyPI sets a max-age of 600 seconds and since we're
+            // principally just interacting with Python package indices here,
+            // we just assume a freshness lifetime equal to what PyPI has.
+            //
+            // Note though that a better solution here is for the index to
+            // support proper HTTP caching headers (ideally Cache-Control, but
+            // Expires also works too, as above).
+            //
+            // [1]: https://github.com/astral-sh/uv/issues/5351#issuecomment-2260588764
+            let duration = Duration::from_secs(600);
+            tracing::trace!(
+                "freshness lifetime heuristically assumed \
+                 because of presence of last-modified header: {duration:?}"
+            );
+            return duration;
         }
         // Without any indicators as to the freshness lifetime, we act
         // conservatively and use a value that will always result in a response
         // being treated as stale.
+        tracing::trace!("could not determine freshness lifetime, assuming none exists");
         Duration::ZERO
     }
 
@@ -1193,7 +1212,7 @@ impl<'a> From<&'a http::HeaderMap> for ResponseHeaders {
 #[archive(check_bytes)]
 #[archive_attr(derive(Debug))]
 struct ETag {
-    /// The actual ETag validator value.
+    /// The actual `ETag` validator value.
     ///
     /// This is received in the response, recorded as part of the cache policy
     /// and then sent back in a re-validation request. This is the "best"
@@ -1219,7 +1238,7 @@ struct ETag {
 }
 
 impl ETag {
-    /// Parses an ETag from a header value.
+    /// Parses an `ETag` from a header value.
     ///
     /// We are a little permissive here and allow arbitrary bytes,
     /// where as [RFC 9110 S8.8.3] is a bit more restrictive.

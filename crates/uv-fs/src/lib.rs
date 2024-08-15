@@ -1,10 +1,8 @@
+use fs2::FileExt;
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
-
-use fs2::FileExt;
-use fs_err as fs;
 use tempfile::NamedTempFile;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, trace, warn};
 
 use uv_warnings::warn_user;
 
@@ -12,23 +10,6 @@ pub use crate::path::*;
 
 pub mod cachedir;
 mod path;
-
-/// Reads data from the path and requires that it be valid UTF-8.
-///
-/// If the file path is `-`, then contents are read from stdin instead.
-#[cfg(feature = "tokio")]
-pub async fn read_to_string(path: impl AsRef<Path>) -> std::io::Result<String> {
-    use std::io::Read;
-
-    let path = path.as_ref();
-    if path == Path::new("-") {
-        let mut buf = String::with_capacity(1024);
-        std::io::stdin().read_to_string(&mut buf)?;
-        Ok(buf)
-    } else {
-        fs_err::tokio::read_to_string(path).await
-    }
-}
 
 /// Reads data from the path and requires that it be valid UTF-8 or UTF-16.
 ///
@@ -63,11 +44,23 @@ pub async fn read_to_string_transcode(path: impl AsRef<Path>) -> std::io::Result
     Ok(buf)
 }
 
-/// Create a symlink from `src` to `dst`, replacing any existing symlink.
+/// Create a symlink at `dst` pointing to `src`, replacing any existing symlink.
 ///
 /// On Windows, this uses the `junction` crate to create a junction point.
+/// Note because junctions are used, the source must be a directory.
 #[cfg(windows)]
 pub fn replace_symlink(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> std::io::Result<()> {
+    // If the source is a file, we can't create a junction
+    if src.as_ref().is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "Cannot create a junction for {}: is not a directory",
+                src.as_ref().display()
+            ),
+        ));
+    }
+
     // Remove the existing symlink, if any.
     match junction::delete(dunce::simplified(dst.as_ref())) {
         Ok(()) => match fs_err::remove_dir_all(dst.as_ref()) {
@@ -86,20 +79,19 @@ pub fn replace_symlink(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> std::io:
     )
 }
 
-/// Create a symlink from `src` to `dst`, replacing any existing symlink if necessary.
+/// Create a symlink at `dst` pointing to `src`, replacing any existing symlink if necessary.
 #[cfg(unix)]
 pub fn replace_symlink(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> std::io::Result<()> {
     // Attempt to create the symlink directly.
     match std::os::unix::fs::symlink(src.as_ref(), dst.as_ref()) {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-            // Create a symlink to the directory store, using a temporary file to ensure atomicity.
-            let temp_dir =
-                tempfile::tempdir_in(dst.as_ref().parent().expect("Cache entry to have parent"))?;
+            // Create a symlink, using a temporary file to ensure atomicity.
+            let temp_dir = tempfile::tempdir_in(dst.as_ref().parent().unwrap())?;
             let temp_file = temp_dir.path().join("link");
             std::os::unix::fs::symlink(src, &temp_file)?;
 
-            // Move the symlink into the wheel cache.
+            // Move the symlink into the target location.
             fs_err::rename(&temp_file, dst.as_ref())?;
 
             Ok(())
@@ -108,10 +100,28 @@ pub fn replace_symlink(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> std::io:
     }
 }
 
+/// Return a [`NamedTempFile`] in the specified directory.
+///
+/// Sets the permissions of the temporary file to `0o666`, to match the non-temporary file default.
+/// ([`NamedTempfile`] defaults to `0o600`.)
+#[cfg(unix)]
+pub fn tempfile_in(path: &Path) -> std::io::Result<NamedTempFile> {
+    use std::os::unix::fs::PermissionsExt;
+    tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o666))
+        .tempfile_in(path)
+}
+
+/// Return a [`NamedTempFile`] in the specified directory.
+#[cfg(not(unix))]
+pub fn tempfile_in(path: &Path) -> std::io::Result<NamedTempFile> {
+    tempfile::Builder::new().tempfile_in(path)
+}
+
 /// Write `data` to `path` atomically using a temporary file and atomic rename.
 #[cfg(feature = "tokio")]
 pub async fn write_atomic(path: impl AsRef<Path>, data: impl AsRef<[u8]>) -> std::io::Result<()> {
-    let temp_file = NamedTempFile::new_in(
+    let temp_file = tempfile_in(
         path.as_ref()
             .parent()
             .expect("Write path must have a parent"),
@@ -132,7 +142,7 @@ pub async fn write_atomic(path: impl AsRef<Path>, data: impl AsRef<[u8]>) -> std
 
 /// Write `data` to `path` atomically using a temporary file and atomic rename.
 pub fn write_atomic_sync(path: impl AsRef<Path>, data: impl AsRef<[u8]>) -> std::io::Result<()> {
-    let temp_file = NamedTempFile::new_in(
+    let temp_file = tempfile_in(
         path.as_ref()
             .parent()
             .expect("Write path must have a parent"),
@@ -151,23 +161,21 @@ pub fn write_atomic_sync(path: impl AsRef<Path>, data: impl AsRef<[u8]>) -> std:
     Ok(())
 }
 
-/// Remove the file or directory at `path`, if it exists.
-///
-/// Returns `true` if the file or directory was removed, and `false` if the path did not exist.
-pub fn force_remove_all(path: impl AsRef<Path>) -> Result<bool, std::io::Error> {
-    let path = path.as_ref();
-
-    let Some(metadata) = metadata_if_exists(path)? else {
-        return Ok(false);
-    };
-
-    if metadata.is_dir() {
-        fs::remove_dir_all(path)?;
-    } else {
-        fs::remove_file(path)?;
-    }
-
-    Ok(true)
+/// Copy `from` to `to` atomically using a temporary file and atomic rename.
+pub fn copy_atomic_sync(from: impl AsRef<Path>, to: impl AsRef<Path>) -> std::io::Result<()> {
+    let temp_file = tempfile_in(to.as_ref().parent().expect("Write path must have a parent"))?;
+    fs_err::copy(from.as_ref(), &temp_file)?;
+    temp_file.persist(&to).map_err(|err| {
+        std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!(
+                "Failed to persist temporary file to {}: {}",
+                to.user_display(),
+                err.error
+            ),
+        )
+    })?;
+    Ok(())
 }
 
 /// Rename a file, retrying (on Windows) if it fails due to transient operating system errors.
@@ -227,11 +235,7 @@ pub fn directories(path: impl AsRef<Path>) -> impl Iterator<Item = PathBuf> {
                 None
             }
         })
-        .filter(|entry| {
-            entry
-                .file_type()
-                .map_or(false, |file_type| file_type.is_dir())
-        })
+        .filter(|entry| entry.file_type().is_ok_and(|file_type| file_type.is_dir()))
         .map(|entry| entry.path())
 }
 
@@ -254,7 +258,7 @@ pub fn symlinks(path: impl AsRef<Path>) -> impl Iterator<Item = PathBuf> {
         .filter(|entry| {
             entry
                 .file_type()
-                .map_or(false, |file_type| file_type.is_symlink())
+                .is_ok_and(|file_type| file_type.is_symlink())
         })
         .map(|entry| entry.path())
 }
@@ -275,11 +279,7 @@ pub fn files(path: impl AsRef<Path>) -> impl Iterator<Item = PathBuf> {
                 None
             }
         })
-        .filter(|entry| {
-            entry
-                .file_type()
-                .map_or(false, |file_type| file_type.is_file())
-        })
+        .filter(|entry| entry.file_type().is_ok_and(|file_type| file_type.is_file()))
         .map(|entry| entry.path())
 }
 
@@ -290,9 +290,12 @@ pub struct LockedFile(fs_err::File);
 impl LockedFile {
     pub fn acquire(path: impl AsRef<Path>, resource: impl Display) -> Result<Self, std::io::Error> {
         let file = fs_err::File::create(path.as_ref())?;
-        debug!("Trying to lock if free: {}", path.as_ref().user_display());
+        trace!("Checking lock for `{resource}`");
         match file.file().try_lock_exclusive() {
-            Ok(()) => Ok(Self(file)),
+            Ok(()) => {
+                debug!("Acquired lock for `{resource}`");
+                Ok(Self(file))
+            }
             Err(err) => {
                 // Log error code and enum kind to help debugging more exotic failures
                 debug!("Try lock error, waiting for exclusive lock: {:?}", err);
@@ -323,16 +326,5 @@ impl Drop for LockedFile {
                 err
             );
         }
-    }
-}
-
-/// Given a path, return its metadata if the file exists, or `None` if it does not.
-///
-/// If the file exists but cannot be read, returns an error.
-pub fn metadata_if_exists(path: impl AsRef<Path>) -> std::io::Result<Option<std::fs::Metadata>> {
-    match fs::metadata(path) {
-        Ok(metadata) => Ok(Some(metadata)),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(err),
     }
 }

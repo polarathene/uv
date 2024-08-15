@@ -1,26 +1,26 @@
 //! Git support is derived from Cargo's implementation.
 //! Cargo is dual-licensed under either Apache 2.0 or MIT, at the user's choice.
 //! Source: <https://github.com/rust-lang/cargo/blob/23eb492cf920ce051abfc56bbaf838514dc8365c/src/cargo/sources/git/source.rs>
+
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use reqwest::Client;
+use reqwest_middleware::ClientWithMiddleware;
 use tracing::{debug, instrument};
 use url::Url;
 
-use cache_key::{digest, RepositoryUrl};
+use cache_key::{cache_digest, RepositoryUrl};
 
 use crate::git::GitRemote;
-use crate::{FetchStrategy, GitSha, GitUrl};
+use crate::{GitOid, GitSha, GitUrl, GIT_STORE};
 
 /// A remote Git source that can be checked out locally.
 pub struct GitSource {
     /// The Git reference from the manifest file.
     git: GitUrl,
     /// The HTTP client to use for fetching.
-    client: Client,
-    /// The fetch strategy to use when cloning.
-    strategy: FetchStrategy,
+    client: ClientWithMiddleware,
     /// The path to the Git source database.
     cache: PathBuf,
     /// The reporter to use for this source.
@@ -29,11 +29,14 @@ pub struct GitSource {
 
 impl GitSource {
     /// Initialize a new Git source.
-    pub fn new(git: GitUrl, cache: impl Into<PathBuf>) -> Self {
+    pub fn new(
+        git: GitUrl,
+        client: impl Into<ClientWithMiddleware>,
+        cache: impl Into<PathBuf>,
+    ) -> Self {
         Self {
             git,
-            client: Client::new(),
-            strategy: FetchStrategy::Cli,
+            client: client.into(),
             cache: cache.into(),
             reporter: None,
         }
@@ -51,15 +54,28 @@ impl GitSource {
     /// Fetch the underlying Git repository at the given revision.
     #[instrument(skip(self), fields(repository = %self.git.repository, rev = ?self.git.precise))]
     pub fn fetch(self) -> Result<Fetch> {
+        // Compute the canonical URL for the repository.
+        let canonical = RepositoryUrl::new(&self.git.repository);
+
         // The path to the repo, within the Git database.
-        let ident = digest(&RepositoryUrl::new(&self.git.repository));
+        let ident = cache_digest(&canonical);
         let db_path = self.cache.join("db").join(&ident);
 
-        let remote = GitRemote::new(&self.git.repository);
+        // Authenticate the URL, if necessary.
+        let remote = if let Some(credentials) = GIT_STORE.get(&canonical) {
+            Cow::Owned(credentials.apply(self.git.repository.clone()))
+        } else {
+            Cow::Borrowed(&self.git.repository)
+        };
+
+        let remote = GitRemote::new(&remote);
         let (db, actual_rev, task) = match (self.git.precise, remote.db_at(&db_path).ok()) {
             // If we have a locked revision, and we have a preexisting database
             // which has that revision, then no update needs to happen.
-            (Some(rev), Some(db)) if db.contains(rev.into()) => (db, rev, None),
+            (Some(rev), Some(db)) if db.contains(rev.into()) => {
+                debug!("Using existing git source `{:?}`", self.git.repository);
+                (db, rev, None)
+            }
 
             // ... otherwise we use this state to update the git database. Note
             // that we still check for being offline here, for example in the
@@ -77,8 +93,7 @@ impl GitSource {
                     &db_path,
                     db,
                     &self.git.reference,
-                    locked_rev.map(git2::Oid::from),
-                    self.strategy,
+                    locked_rev.map(GitOid::from),
                     &self.client,
                 )?;
 
@@ -98,12 +113,8 @@ impl GitSource {
             .join("checkouts")
             .join(&ident)
             .join(short_id.as_str());
-        db.copy_to(
-            actual_rev.into(),
-            &checkout_path,
-            self.strategy,
-            &self.client,
-        )?;
+
+        db.copy_to(actual_rev.into(), &checkout_path)?;
 
         // Report the checkout operation to the reporter.
         if let Some(task) = task {

@@ -2,6 +2,9 @@ use std::str::FromStr;
 
 use pep508_rs::PackageName;
 
+/// A specifier used for (e.g.) pip's `--no-binary` flag.
+///
+/// This is a superset of the package name format, allowing for special values `:all:` and `:none:`.
 #[derive(Debug, Clone)]
 pub enum PackageNameSpecifier {
     All,
@@ -75,16 +78,19 @@ impl schemars::JsonSchema for PackageNameSpecifier {
                 ),
                 ..schemars::schema::StringValidation::default()
             })),
+            metadata: Some(Box::new(schemars::schema::Metadata {
+                description: Some("The name of a package, or `:all:` or `:none:` to select or omit all packages, respectively.".to_string()),
+              ..schemars::schema::Metadata::default()
+            })),
             ..schemars::schema::SchemaObject::default()
         }
         .into()
     }
 }
 
-/// Package name specification.
+/// A repeated specifier used for (e.g.) pip's `--no-binary` flag.
 ///
-/// Consumes both package names and selection directives for compatibility with pip flags
-/// such as `--no-binary`.
+/// This is a superset of the package name format, allowing for special values `:all:` and `:none:`.
 #[derive(Debug, Clone)]
 pub enum PackageNameSpecifiers {
     All,

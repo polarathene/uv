@@ -27,11 +27,9 @@ Usage:
 
         Override the uv package index and update the tests
 
-        $ UV_INDEX_URL="http://localhost:3141" ./scripts/scenarios/generate.py <path to scenarios>
+        $ UV_TEST_INDEX_URL="http://localhost:3141/simple/" ./scripts/scenarios/generate.py <path to scenarios>
 
         If an editable version of packse is installed, this script will use its bundled scenarios by default.
-
-    Use
 
 """
 
@@ -49,12 +47,14 @@ TOOL_ROOT = Path(__file__).parent
 TEMPLATES = TOOL_ROOT / "templates"
 INSTALL_TEMPLATE = TEMPLATES / "install.mustache"
 COMPILE_TEMPLATE = TEMPLATES / "compile.mustache"
+LOCK_TEMPLATE = TEMPLATES / "lock.mustache"
 PACKSE = TOOL_ROOT / "packse-scenarios"
 REQUIREMENTS = TOOL_ROOT / "requirements.txt"
 PROJECT_ROOT = TOOL_ROOT.parent.parent
 TESTS = PROJECT_ROOT / "crates" / "uv" / "tests"
 INSTALL_TESTS = TESTS / "pip_install_scenarios.rs"
 COMPILE_TESTS = TESTS / "pip_compile_scenarios.rs"
+LOCK_TESTS = TESTS / "lock_scenarios.rs"
 TESTS_COMMON_MOD_RS = TESTS / "common/mod.rs"
 
 try:
@@ -106,7 +106,8 @@ def main(scenarios: list[Path], snapshot_update: bool = True):
     targets = []
     for target in scenarios:
         if target.is_dir():
-            targets.extend(target.glob("*.json"))
+            targets.extend(target.glob("**/*.json"))
+            targets.extend(target.glob("**/*.toml"))
         else:
             targets.append(target)
 
@@ -119,22 +120,30 @@ def main(scenarios: list[Path], snapshot_update: bool = True):
     data["scenarios"] = [
         scenario
         for scenario in data["scenarios"]
-        # Drop the example scenario
-        if scenario["name"] != "example"
+        # Drop example scenarios
+        if not scenario["name"].startswith("example")
     ]
 
-    # Wrap the description onto multiple lines
+    # We have a mixture of long singe-line descriptions (json scenarios) we need to
+    # wrap and manually formatted markdown in toml and yaml scenarios we want to
+    # preserve.
     for scenario in data["scenarios"]:
-        scenario["description_lines"] = textwrap.wrap(scenario["description"], width=80)
+        if scenario["_textwrap"]:
+            scenario["description"] = textwrap.wrap(scenario["description"], width=80)
+        else:
+            scenario["description"] = scenario["description"].splitlines()
+        # Don't drop empty lines like chevron would.
+        scenario["description"] = "\n/// ".join(scenario["description"])
 
-    # Wrap the expected explanation onto multiple lines
+    # Apply the same wrapping to the expected explanation
     for scenario in data["scenarios"]:
         expected = scenario["expected"]
-        expected["explanation_lines"] = (
-            textwrap.wrap(expected["explanation"], width=80)
-            if expected["explanation"]
-            else []
-        )
+        if explanation := expected["explanation"]:
+            if scenario["_textwrap"]:
+                expected["explanation"] = textwrap.wrap(explanation, width=80)
+            else:
+                expected["explanation"] = explanation.splitlines()
+            expected["explanation"] = "\n// ".join(expected["explanation"])
 
     # Hack to track which scenarios require a specific Python patch version
     for scenario in data["scenarios"]:
@@ -154,16 +163,18 @@ def main(scenarios: list[Path], snapshot_update: bool = True):
             "local-used-without-sdist",
         ):
             expected["satisfiable"] = False
-            expected["explanation"] = (
-                "We do not have correct behavior for local version identifiers yet"
-            )
 
-    # Split scenarios into `install` and `compile` cases
+    # Split scenarios into `install`, `compile` and `lock` cases
     install_scenarios = []
     compile_scenarios = []
+    lock_scenarios = []
 
     for scenario in data["scenarios"]:
-        if (scenario["resolver_options"] or {}).get("python") is not None:
+        resolver_options = scenario["resolver_options"] or {}
+        if resolver_options.get("universal"):
+            print(scenario["name"])
+            lock_scenarios.append(scenario)
+        elif resolver_options.get("python") is not None:
             compile_scenarios.append(scenario)
         else:
             install_scenarios.append(scenario)
@@ -171,6 +182,7 @@ def main(scenarios: list[Path], snapshot_update: bool = True):
     for template, tests, scenarios in [
         (INSTALL_TEMPLATE, INSTALL_TESTS, install_scenarios),
         (COMPILE_TEMPLATE, COMPILE_TESTS, compile_scenarios),
+        (LOCK_TEMPLATE, LOCK_TESTS, lock_scenarios),
     ]:
         data = {"scenarios": scenarios}
 
@@ -185,7 +197,10 @@ def main(scenarios: list[Path], snapshot_update: bool = True):
             f"https://raw.githubusercontent.com/astral-sh/packse/{ref}/vendor/links.html"
         )
 
-        data["index_url"] = f"https://astral-sh.github.io/packse/{ref}/simple-html/"
+        data["index_url"] = os.environ.get(
+            "UV_TEST_INDEX_URL",
+            f"https://astral-sh.github.io/packse/{ref}/simple-html/",
+        )
 
         # Render the template
         logging.info(f"Rendering template {template.name}")
@@ -197,7 +212,7 @@ def main(scenarios: list[Path], snapshot_update: bool = True):
         logging.info(
             f"Updating test file at `{tests.relative_to(PROJECT_ROOT)}`...",
         )
-        with open(tests, "wt") as test_file:
+        with open(tests, "w") as test_file:
             test_file.write(output)
 
         # Format
@@ -214,20 +229,21 @@ def main(scenarios: list[Path], snapshot_update: bool = True):
         if snapshot_update:
             logging.info("Updating snapshots...")
             env = os.environ.copy()
-            env["UV_TEST_PYTHON_PATH"] = str(PROJECT_ROOT / "bin")
+            command = [
+                "cargo",
+                "insta",
+                "test",
+                "--features",
+                "pypi,python,python-patch",
+                "--accept",
+                "--test-runner",
+                "nextest",
+                "--test",
+                tests.with_suffix("").name,
+            ]
+            logging.debug(f"Running {" ".join(command)}")
             subprocess.call(
-                [
-                    "cargo",
-                    "insta",
-                    "test",
-                    "--features",
-                    "pypi,python",
-                    "--accept",
-                    "--test-runner",
-                    "nextest",
-                    "--test",
-                    tests.with_suffix("").name,
-                ],
+                command,
                 cwd=PROJECT_ROOT,
                 stderr=subprocess.STDOUT,
                 stdout=sys.stderr if debug else subprocess.DEVNULL,
@@ -240,21 +256,27 @@ def main(scenarios: list[Path], snapshot_update: bool = True):
 
 
 def update_common_mod_rs(packse_version: str):
-    """Update the value of `BUILD_VENDOR_LINKS_URL` used in non-scenario tests."""
+    """Update the value of `PACKSE_VERSION` used in non-scenario tests.
+
+    Example:
+    ```rust
+    pub const PACKSE_VERSION: &str = "0.3.30";
+    ```
+    """
     test_common = TESTS_COMMON_MOD_RS.read_text()
-    url_before_version = "https://raw.githubusercontent.com/astral-sh/packse/"
-    url_after_version = "/vendor/links.html"
-    build_vendor_links_url = f"{url_before_version}{packse_version}{url_after_version}"
+    before_version = 'pub const PACKSE_VERSION: &str = "'
+    after_version = '";'
+    build_vendor_links_url = f"{before_version}{packse_version}{after_version}"
     if build_vendor_links_url in test_common:
         logging.info(f"Up-to-date: {TESTS_COMMON_MOD_RS}")
     else:
         logging.info(f"Updating: {TESTS_COMMON_MOD_RS}")
         url_matcher = re.compile(
-            re.escape(url_before_version) + "[^/]+" + re.escape(url_after_version)
+            re.escape(before_version) + '[^"]+' + re.escape(after_version)
         )
         assert (
             len(url_matcher.findall(test_common)) == 1
-        ), f"BUILD_VENDOR_LINKS_URL not found in {TESTS_COMMON_MOD_RS}"
+        ), f"PACKSE_VERSION not found in {TESTS_COMMON_MOD_RS}"
         test_common = url_matcher.sub(build_vendor_links_url, test_common)
         TESTS_COMMON_MOD_RS.write_text(test_common)
 

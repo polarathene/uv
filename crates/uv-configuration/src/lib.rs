@@ -1,19 +1,27 @@
 pub use authentication::*;
 pub use build_options::*;
+pub use concurrency::*;
 pub use config_settings::*;
 pub use constraints::*;
+pub use extras::*;
+pub use hash::*;
 pub use name_specifiers::*;
 pub use overrides::*;
 pub use package_options::*;
 pub use preview::*;
+pub use sources::*;
 pub use target_triple::*;
 
 mod authentication;
 mod build_options;
+mod concurrency;
 mod config_settings;
 mod constraints;
+mod extras;
+mod hash;
 mod name_specifiers;
 mod overrides;
 mod package_options;
 mod preview;
+mod sources;
 mod target_triple;
