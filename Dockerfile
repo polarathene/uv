@@ -83,4 +83,5 @@ HEREDOC
 FROM scratch
 COPY --from=builder-app /uv /uvx /
 WORKDIR /io
+ENV PATH="/"
 ENTRYPOINT ["/uv"]
