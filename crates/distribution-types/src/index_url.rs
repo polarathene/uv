@@ -1,25 +1,23 @@
+use itertools::Either;
 use std::borrow::Cow;
 use std::fmt::{Display, Formatter};
 use std::ops::Deref;
-use std::path::PathBuf;
+use std::path::Path;
 use std::str::FromStr;
+use std::sync::LazyLock;
+use thiserror::Error;
+use url::{ParseError, Url};
 
-use itertools::Either;
-use once_cell::sync::Lazy;
-use serde::{Deserialize, Serialize};
-use url::Url;
-
-use pep508_rs::{expand_env_vars, split_scheme, strip_host, Scheme, VerbatimUrl};
-use uv_fs::normalize_url_path;
+use pep508_rs::{VerbatimUrl, VerbatimUrlError};
 
 use crate::Verbatim;
 
-static PYPI_URL: Lazy<Url> = Lazy::new(|| Url::parse("https://pypi.org/simple").unwrap());
+static PYPI_URL: LazyLock<Url> = LazyLock::new(|| Url::parse("https://pypi.org/simple").unwrap());
 
-static DEFAULT_INDEX_URL: Lazy<IndexUrl> =
-    Lazy::new(|| IndexUrl::Pypi(VerbatimUrl::from_url(PYPI_URL.clone())));
+static DEFAULT_INDEX_URL: LazyLock<IndexUrl> =
+    LazyLock::new(|| IndexUrl::Pypi(VerbatimUrl::from_url(PYPI_URL.clone())));
 
-/// The url of an index, newtype'd to avoid mixing it with file urls.
+/// The URL of an index to use for fetching packages (e.g., PyPI).
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub enum IndexUrl {
     Pypi(VerbatimUrl),
@@ -36,6 +34,11 @@ impl schemars::JsonSchema for IndexUrl {
     fn json_schema(_gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
         schemars::schema::SchemaObject {
             instance_type: Some(schemars::schema::InstanceType::String.into()),
+            format: Some("uri".to_owned()),
+            metadata: Some(Box::new(schemars::schema::Metadata {
+                description: Some("The URL of an index to use for fetching packages (e.g., `https://pypi.org/simple`).".to_string()),
+              ..schemars::schema::Metadata::default()
+            })),
             ..schemars::schema::SchemaObject::default()
         }
         .into()
@@ -86,17 +89,36 @@ impl Verbatim for IndexUrl {
     }
 }
 
+impl From<FlatIndexLocation> for IndexUrl {
+    fn from(location: FlatIndexLocation) -> Self {
+        match location {
+            FlatIndexLocation::Path(url) => Self::Path(url),
+            FlatIndexLocation::Url(url) => Self::Url(url),
+        }
+    }
+}
+
+/// An error that can occur when parsing an [`IndexUrl`].
+#[derive(Error, Debug)]
+pub enum IndexUrlError {
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Url(#[from] ParseError),
+    #[error(transparent)]
+    VerbatimUrl(#[from] VerbatimUrlError),
+}
+
 impl FromStr for IndexUrl {
-    type Err = url::ParseError;
+    type Err = IndexUrlError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let url = Url::parse(s)?;
-        let url = VerbatimUrl::from_url(url).with_given(s.to_owned());
-        if *url.raw() == *PYPI_URL {
-            Ok(Self::Pypi(url))
+        let url = if let Ok(path) = Path::new(s).canonicalize() {
+            VerbatimUrl::from_path(path)?
         } else {
-            Ok(Self::Url(url))
-        }
+            VerbatimUrl::parse_url(s)?
+        };
+        Ok(Self::from(url.with_given(s)))
     }
 }
 
@@ -105,7 +127,7 @@ impl serde::ser::Serialize for IndexUrl {
     where
         S: serde::ser::Serializer,
     {
-        self.verbatim().serialize(serializer)
+        self.to_string().serialize(serializer)
     }
 }
 
@@ -121,7 +143,9 @@ impl<'de> serde::de::Deserialize<'de> for IndexUrl {
 
 impl From<VerbatimUrl> for IndexUrl {
     fn from(url: VerbatimUrl) -> Self {
-        if *url.raw() == *PYPI_URL {
+        if url.scheme() == "file" {
+            Self::Path(url)
+        } else if *url.raw() == *PYPI_URL {
             Self::Pypi(url)
         } else {
             Self::Url(url)
@@ -154,10 +178,10 @@ impl Deref for IndexUrl {
 /// A directory with distributions or a URL to an HTML file with a flat listing of distributions.
 ///
 /// Also known as `--find-links`.
-#[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub enum FlatIndexLocation {
-    Path(PathBuf),
-    Url(Url),
+    Path(VerbatimUrl),
+    Url(VerbatimUrl),
 }
 
 #[cfg(feature = "schemars")]
@@ -169,57 +193,36 @@ impl schemars::JsonSchema for FlatIndexLocation {
     fn json_schema(_gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
         schemars::schema::SchemaObject {
             instance_type: Some(schemars::schema::InstanceType::String.into()),
+            format: Some("uri".to_owned()),
+            metadata: Some(Box::new(schemars::schema::Metadata {
+                description: Some("The path to a directory of distributions, or a URL to an HTML file with a flat listing of distributions.".to_string()),
+              ..schemars::schema::Metadata::default()
+            })),
             ..schemars::schema::SchemaObject::default()
         }
         .into()
     }
 }
 
-impl FromStr for FlatIndexLocation {
-    type Err = url::ParseError;
+impl FlatIndexLocation {
+    /// Return the raw URL for the `--find-links` index.
+    pub fn url(&self) -> &Url {
+        match self {
+            Self::Url(url) => url.raw(),
+            Self::Path(url) => url.raw(),
+        }
+    }
 
-    /// Parse a raw string for a `--find-links` entry, which could be a URL or a local path.
-    ///
-    /// For example:
-    /// - `file:///home/ferris/project/scripts/...`
-    /// - `file:../ferris/`
-    /// - `../ferris/`
-    /// - `https://download.pytorch.org/whl/torch_stable.html`
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        // Expand environment variables.
-        let expanded = expand_env_vars(s);
-
-        // Parse the expanded path.
-        if let Some((scheme, path)) = split_scheme(&expanded) {
-            match Scheme::parse(scheme) {
-                // Ex) `file:///home/ferris/project/scripts/...`, `file://localhost/home/ferris/project/scripts/...`, or `file:../ferris/`
-                Some(Scheme::File) => {
-                    // Strip the leading slashes, along with the `localhost` host, if present.
-                    let path = strip_host(path);
-
-                    // Transform, e.g., `/C:/Users/ferris/wheel-0.42.0.tar.gz` to `C:\Users\ferris\wheel-0.42.0.tar.gz`.
-                    let path = normalize_url_path(path);
-
-                    let path = PathBuf::from(path.as_ref());
-                    Ok(Self::Path(path))
-                }
-
-                // Ex) `https://download.pytorch.org/whl/torch_stable.html`
-                Some(_) => {
-                    let url = Url::parse(expanded.as_ref())?;
-                    Ok(Self::Url(url))
-                }
-
-                // Ex) `C:\Users\ferris\wheel-0.42.0.tar.gz`
-                None => {
-                    let path = PathBuf::from(expanded.as_ref());
-                    Ok(Self::Path(path))
-                }
-            }
+    /// Return the redacted URL for the `--find-links` index, omitting any sensitive credentials.
+    pub fn redacted(&self) -> Cow<'_, Url> {
+        let url = self.url();
+        if url.username().is_empty() && url.password().is_none() {
+            Cow::Borrowed(url)
         } else {
-            // Ex) `../ferris/`
-            let path = PathBuf::from(expanded.as_ref());
-            Ok(Self::Path(path))
+            let mut url = url.clone();
+            let _ = url.set_username("");
+            let _ = url.set_password(None);
+            Cow::Owned(url)
         }
     }
 }
@@ -227,8 +230,59 @@ impl FromStr for FlatIndexLocation {
 impl Display for FlatIndexLocation {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Path(path) => Display::fmt(&path.display(), f),
             Self::Url(url) => Display::fmt(url, f),
+            Self::Path(url) => Display::fmt(url, f),
+        }
+    }
+}
+
+impl Verbatim for FlatIndexLocation {
+    fn verbatim(&self) -> Cow<'_, str> {
+        match self {
+            Self::Url(url) => url.verbatim(),
+            Self::Path(url) => url.verbatim(),
+        }
+    }
+}
+
+impl FromStr for FlatIndexLocation {
+    type Err = IndexUrlError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let url = if let Ok(path) = Path::new(s).canonicalize() {
+            VerbatimUrl::from_path(path)?
+        } else {
+            VerbatimUrl::parse_url(s)?
+        };
+        Ok(Self::from(url.with_given(s)))
+    }
+}
+
+impl serde::ser::Serialize for FlatIndexLocation {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::ser::Serializer,
+    {
+        self.to_string().serialize(serializer)
+    }
+}
+
+impl<'de> serde::de::Deserialize<'de> for FlatIndexLocation {
+    fn deserialize<D>(deserializer: D) -> Result<FlatIndexLocation, D::Error>
+    where
+        D: serde::de::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        FlatIndexLocation::from_str(&s).map_err(serde::de::Error::custom)
+    }
+}
+
+impl From<VerbatimUrl> for FlatIndexLocation {
+    fn from(url: VerbatimUrl) -> Self {
+        if url.scheme() == "file" {
+            Self::Path(url)
+        } else {
+            Self::Url(url)
         }
     }
 }
@@ -236,7 +290,8 @@ impl Display for FlatIndexLocation {
 /// The index locations to use for fetching packages. By default, uses the PyPI index.
 ///
 /// From a pip perspective, this type merges `--index-url`, `--extra-index-url`, and `--find-links`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct IndexLocations {
     index: Option<IndexUrl>,
     extra_index: Vec<IndexUrl>,
@@ -293,6 +348,15 @@ impl IndexLocations {
             no_index: self.no_index || no_index,
         }
     }
+
+    /// Returns `true` if no index configuration is set, i.e., the [`IndexLocations`] matches the
+    /// default configuration.
+    pub fn is_none(&self) -> bool {
+        self.index.is_none()
+            && self.extra_index.is_empty()
+            && self.flat_index.is_empty()
+            && !self.no_index
+    }
 }
 
 impl<'a> IndexLocations {
@@ -331,6 +395,11 @@ impl<'a> IndexLocations {
         self.flat_index.iter()
     }
 
+    /// Return the `--no-index` flag.
+    pub fn no_index(&self) -> bool {
+        self.no_index
+    }
+
     /// Clone the index locations into a [`IndexUrls`] instance.
     pub fn index_urls(&'a self) -> IndexUrls {
         IndexUrls {
@@ -346,7 +415,7 @@ impl<'a> IndexLocations {
             .map(IndexUrl::url)
             .chain(self.flat_index.iter().filter_map(|index| match index {
                 FlatIndexLocation::Path(_) => None,
-                FlatIndexLocation::Url(url) => Some(url),
+                FlatIndexLocation::Url(url) => Some(url.raw()),
             }))
     }
 }
@@ -416,34 +485,5 @@ impl From<IndexLocations> for IndexUrls {
             extra_index: locations.extra_index,
             no_index: locations.no_index,
         }
-    }
-}
-
-#[cfg(test)]
-#[cfg(unix)]
-mod test {
-    use super::*;
-
-    #[test]
-    fn parse_find_links() {
-        assert_eq!(
-            FlatIndexLocation::from_str("file:///home/ferris/project/scripts/...").unwrap(),
-            FlatIndexLocation::Path(PathBuf::from("/home/ferris/project/scripts/..."))
-        );
-        assert_eq!(
-            FlatIndexLocation::from_str("file:../ferris/").unwrap(),
-            FlatIndexLocation::Path(PathBuf::from("../ferris/"))
-        );
-        assert_eq!(
-            FlatIndexLocation::from_str("../ferris/").unwrap(),
-            FlatIndexLocation::Path(PathBuf::from("../ferris/"))
-        );
-        assert_eq!(
-            FlatIndexLocation::from_str("https://download.pytorch.org/whl/torch_stable.html")
-                .unwrap(),
-            FlatIndexLocation::Url(
-                Url::parse("https://download.pytorch.org/whl/torch_stable.html").unwrap()
-            )
-        );
     }
 }

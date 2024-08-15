@@ -6,15 +6,15 @@ use tracing::instrument;
 
 use distribution_filename::{DistFilename, SourceDistFilename, WheelFilename};
 use distribution_types::{
-    BuiltDist, Dist, File, Hash, HashPolicy, IncompatibleSource, IncompatibleWheel, IndexUrl,
-    PrioritizedDist, RegistryBuiltDist, RegistrySourceDist, SourceDist, SourceDistCompatibility,
+    File, HashComparison, HashPolicy, IncompatibleSource, IncompatibleWheel, IndexUrl,
+    PrioritizedDist, RegistryBuiltWheel, RegistrySourceDist, SourceDistCompatibility,
     WheelCompatibility,
 };
 use pep440_rs::Version;
 use platform_tags::{TagCompatibility, Tags};
 use pypi_types::HashDigest;
 use uv_client::FlatIndexEntries;
-use uv_configuration::{NoBinary, NoBuild};
+use uv_configuration::BuildOptions;
 use uv_normalize::PackageName;
 use uv_types::HashStrategy;
 
@@ -34,10 +34,9 @@ impl FlatIndex {
     #[instrument(skip_all)]
     pub fn from_entries(
         entries: FlatIndexEntries,
-        tags: &Tags,
+        tags: Option<&Tags>,
         hasher: &HashStrategy,
-        no_build: &NoBuild,
-        no_binary: &NoBinary,
+        build_options: &BuildOptions,
     ) -> Self {
         // Collect compatible distributions.
         let mut index = FxHashMap::default();
@@ -49,8 +48,7 @@ impl FlatIndex {
                 filename,
                 tags,
                 hasher,
-                no_build,
-                no_binary,
+                build_options,
                 url,
             );
         }
@@ -61,15 +59,13 @@ impl FlatIndex {
         Self { index, offline }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn add_file(
         distributions: &mut FlatDistributions,
         file: File,
         filename: DistFilename,
-        tags: &Tags,
+        tags: Option<&Tags>,
         hasher: &HashStrategy,
-        no_build: &NoBuild,
-        no_binary: &NoBinary,
+        build_options: &BuildOptions,
         index: IndexUrl,
     ) {
         // No `requires-python` here: for source distributions, we don't have that information;
@@ -79,12 +75,12 @@ impl FlatIndex {
                 let version = filename.version.clone();
 
                 let compatibility =
-                    Self::wheel_compatibility(&filename, &file.hashes, tags, hasher, no_binary);
-                let dist = Dist::Built(BuiltDist::Registry(RegistryBuiltDist {
+                    Self::wheel_compatibility(&filename, &file.hashes, tags, hasher, build_options);
+                let dist = RegistryBuiltWheel {
                     filename,
                     file: Box::new(file),
                     index,
-                }));
+                };
                 match distributions.0.entry(version) {
                     Entry::Occupied(mut entry) => {
                         entry.get_mut().insert_built(dist, vec![], compatibility);
@@ -96,12 +92,15 @@ impl FlatIndex {
             }
             DistFilename::SourceDistFilename(filename) => {
                 let compatibility =
-                    Self::source_dist_compatibility(&filename, &file.hashes, hasher, no_build);
-                let dist = Dist::Source(SourceDist::Registry(RegistrySourceDist {
-                    filename: filename.clone(),
+                    Self::source_dist_compatibility(&filename, &file.hashes, hasher, build_options);
+                let dist = RegistrySourceDist {
+                    name: filename.name.clone(),
+                    version: filename.version.clone(),
+                    ext: filename.extension,
                     file: Box::new(file),
                     index,
-                }));
+                    wheels: vec![],
+                };
                 match distributions.0.entry(filename.version) {
                     Entry::Occupied(mut entry) => {
                         entry.get_mut().insert_source(dist, vec![], compatibility);
@@ -118,30 +117,26 @@ impl FlatIndex {
         filename: &SourceDistFilename,
         hashes: &[HashDigest],
         hasher: &HashStrategy,
-        no_build: &NoBuild,
+        build_options: &BuildOptions,
     ) -> SourceDistCompatibility {
         // Check if source distributions are allowed for this package.
-        let no_build = match no_build {
-            NoBuild::None => false,
-            NoBuild::All => true,
-            NoBuild::Packages(packages) => packages.contains(&filename.name),
-        };
-
-        if no_build {
+        if build_options.no_build_package(&filename.name) {
             return SourceDistCompatibility::Incompatible(IncompatibleSource::NoBuild);
         }
 
         // Check if hashes line up
-        let hash = if let HashPolicy::Validate(required) = hasher.get_package(&filename.name) {
+        let hash = if let HashPolicy::Validate(required) =
+            hasher.get_package(&filename.name, &filename.version)
+        {
             if hashes.is_empty() {
-                Hash::Missing
+                HashComparison::Missing
             } else if required.iter().any(|hash| hashes.contains(hash)) {
-                Hash::Matched
+                HashComparison::Matched
             } else {
-                Hash::Mismatched
+                HashComparison::Mismatched
             }
         } else {
-            Hash::Matched
+            HashComparison::Matched
         };
 
         SourceDistCompatibility::Compatible(hash)
@@ -150,43 +145,45 @@ impl FlatIndex {
     fn wheel_compatibility(
         filename: &WheelFilename,
         hashes: &[HashDigest],
-        tags: &Tags,
+        tags: Option<&Tags>,
         hasher: &HashStrategy,
-        no_binary: &NoBinary,
+        build_options: &BuildOptions,
     ) -> WheelCompatibility {
         // Check if binaries are allowed for this package.
-        let no_binary = match no_binary {
-            NoBinary::None => false,
-            NoBinary::All => true,
-            NoBinary::Packages(packages) => packages.contains(&filename.name),
-        };
-
-        if no_binary {
+        if build_options.no_binary_package(&filename.name) {
             return WheelCompatibility::Incompatible(IncompatibleWheel::NoBinary);
         }
 
         // Determine a compatibility for the wheel based on tags.
-        let priority = match filename.compatibility(tags) {
-            TagCompatibility::Incompatible(tag) => {
-                return WheelCompatibility::Incompatible(IncompatibleWheel::Tag(tag))
-            }
-            TagCompatibility::Compatible(priority) => priority,
+        let priority = match tags {
+            Some(tags) => match filename.compatibility(tags) {
+                TagCompatibility::Incompatible(tag) => {
+                    return WheelCompatibility::Incompatible(IncompatibleWheel::Tag(tag))
+                }
+                TagCompatibility::Compatible(priority) => Some(priority),
+            },
+            None => None,
         };
 
-        // Check if hashes line up
-        let hash = if let HashPolicy::Validate(required) = hasher.get_package(&filename.name) {
+        // Check if hashes line up.
+        let hash = if let HashPolicy::Validate(required) =
+            hasher.get_package(&filename.name, &filename.version)
+        {
             if hashes.is_empty() {
-                Hash::Missing
+                HashComparison::Missing
             } else if required.iter().any(|hash| hashes.contains(hash)) {
-                Hash::Matched
+                HashComparison::Matched
             } else {
-                Hash::Mismatched
+                HashComparison::Mismatched
             }
         } else {
-            Hash::Matched
+            HashComparison::Matched
         };
 
-        WheelCompatibility::Compatible(hash, priority)
+        // Break ties with the build tag.
+        let build_tag = filename.build_tag.clone();
+
+        WheelCompatibility::Compatible(hash, priority, build_tag)
     }
 
     /// Get the [`FlatDistributions`] for the given package name.

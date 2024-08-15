@@ -2,73 +2,123 @@ use std::str::FromStr;
 
 use bench::criterion::black_box;
 use bench::criterion::{criterion_group, criterion_main, measurement::WallTime, Criterion};
-use distribution_types::Requirement;
+use pypi_types::Requirement;
 use uv_cache::Cache;
 use uv_client::RegistryClientBuilder;
+use uv_python::PythonEnvironment;
 use uv_resolver::Manifest;
 
 fn resolve_warm_jupyter(c: &mut Criterion<WallTime>) {
-    let runtime = &tokio::runtime::Builder::new_current_thread()
+    let run = setup(Manifest::simple(vec![Requirement::from(
+        pep508_rs::Requirement::from_str("jupyter==1.0.0").unwrap(),
+    )]));
+    c.bench_function("resolve_warm_jupyter", |b| b.iter(|| run(false)));
+}
+
+fn resolve_warm_jupyter_universal(c: &mut Criterion<WallTime>) {
+    let run = setup(Manifest::simple(vec![Requirement::from(
+        pep508_rs::Requirement::from_str("jupyter==1.0.0").unwrap(),
+    )]));
+    c.bench_function("resolve_warm_jupyter_universal", |b| b.iter(|| run(true)));
+}
+
+fn resolve_warm_airflow(c: &mut Criterion<WallTime>) {
+    let run = setup(Manifest::simple(vec![
+        Requirement::from(pep508_rs::Requirement::from_str("apache-airflow[all]==2.9.3").unwrap()),
+        Requirement::from(
+            pep508_rs::Requirement::from_str("apache-airflow-providers-apache-beam>3.0.0").unwrap(),
+        ),
+    ]));
+    c.bench_function("resolve_warm_airflow", |b| b.iter(|| run(false)));
+}
+
+// This takes >5m to run in CodSpeed.
+// fn resolve_warm_airflow_universal(c: &mut Criterion<WallTime>) {
+//     let run = setup(Manifest::simple(vec![
+//         Requirement::from(pep508_rs::Requirement::from_str("apache-airflow[all]").unwrap()),
+//         Requirement::from(
+//             pep508_rs::Requirement::from_str("apache-airflow-providers-apache-beam>3.0.0").unwrap(),
+//         ),
+//     ]));
+//     c.bench_function("resolve_warm_airflow_universal", |b| b.iter(|| run(true)));
+// }
+
+criterion_group!(
+    uv,
+    resolve_warm_jupyter,
+    resolve_warm_jupyter_universal,
+    resolve_warm_airflow
+);
+criterion_main!(uv);
+
+fn setup(manifest: Manifest) -> impl Fn(bool) {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        // CodSpeed limits the total number of threads to 500
+        .max_blocking_threads(256)
         .enable_all()
         .build()
         .unwrap();
 
-    let cache = &Cache::from_path(".cache").unwrap();
-    let manifest = &Manifest::simple(vec![Requirement::from_pep508(
-        pep508_rs::Requirement::from_str("jupyter").unwrap(),
-    )
-    .unwrap()]);
-    let client = &RegistryClientBuilder::new(cache.clone()).build();
+    let cache = Cache::from_path("../../.cache").init().unwrap();
+    let interpreter = PythonEnvironment::from_root("../../.venv", &cache)
+        .unwrap()
+        .into_interpreter();
+    let client = RegistryClientBuilder::new(cache.clone()).build();
 
-    let run = || {
+    move |universal| {
         runtime
             .block_on(resolver::resolve(
                 black_box(manifest.clone()),
                 black_box(cache.clone()),
-                black_box(client),
+                black_box(&client),
+                &interpreter,
+                universal,
             ))
             .unwrap();
-    };
-
-    c.bench_function("resolve_warm_jupyter", |b| b.iter(run));
+    }
 }
 
-criterion_group!(uv, resolve_warm_jupyter);
-criterion_main!(uv);
-
 mod resolver {
-    use std::path::{Path, PathBuf};
-    use std::str::FromStr;
+    use std::sync::LazyLock;
 
     use anyhow::Result;
-    use once_cell::sync::Lazy;
+    use chrono::NaiveDate;
 
-    use distribution_types::{IndexLocations, Requirement, Resolution, SourceDist};
-    use pep508_rs::{MarkerEnvironment, StringVersion};
+    use distribution_types::IndexLocations;
+    use install_wheel_rs::linker::LinkMode;
+    use pep440_rs::Version;
+    use pep508_rs::{MarkerEnvironment, MarkerEnvironmentBuilder};
     use platform_tags::{Arch, Os, Platform, Tags};
     use uv_cache::Cache;
     use uv_client::RegistryClient;
-    use uv_configuration::{BuildKind, NoBinary, NoBuild, SetupPyStrategy};
-    use uv_interpreter::{Interpreter, PythonEnvironment};
-    use uv_resolver::{FlatIndex, InMemoryIndex, Manifest, Options, ResolutionGraph, Resolver};
-    use uv_types::{
-        BuildContext, BuildIsolation, EmptyInstalledPackages, HashStrategy, SourceBuildTrait,
+    use uv_configuration::{
+        BuildOptions, Concurrency, ConfigSettings, IndexStrategy, PreviewMode, SetupPyStrategy,
+        SourceStrategy,
     };
+    use uv_dispatch::BuildDispatch;
+    use uv_distribution::DistributionDatabase;
+    use uv_git::GitResolver;
+    use uv_python::Interpreter;
+    use uv_resolver::{
+        FlatIndex, InMemoryIndex, Manifest, OptionsBuilder, PythonRequirement, RequiresPython,
+        ResolutionGraph, Resolver, ResolverMarkers,
+    };
+    use uv_types::{BuildIsolation, EmptyInstalledPackages, HashStrategy, InFlight};
 
-    static MARKERS: Lazy<MarkerEnvironment> = Lazy::new(|| {
-        MarkerEnvironment {
-            implementation_name: "cpython".to_string(),
-            implementation_version: StringVersion::from_str("3.11.5").unwrap(),
-            os_name: "posix".to_string(),
-            platform_machine: "arm64".to_string(),
-            platform_python_implementation: "CPython".to_string(),
-            platform_release: "21.6.0".to_string(),
-            platform_system: "Darwin".to_string(),
-            platform_version: "Darwin Kernel Version 21.6.0: Mon Aug 22 20:19:52 PDT 2022; root:xnu-8020.140.49~2/RELEASE_ARM64_T6000".to_string(),
-            python_full_version: StringVersion::from_str("3.11.5").unwrap(),
-            python_version: StringVersion::from_str("3.11").unwrap(),
-            sys_platform: "darwin".to_string(),
-        }
+    static MARKERS: LazyLock<MarkerEnvironment> = LazyLock::new(|| {
+        MarkerEnvironment::try_from(MarkerEnvironmentBuilder {
+            implementation_name: "cpython",
+            implementation_version: "3.11.5",
+            os_name: "posix",
+            platform_machine: "arm64",
+            platform_python_implementation: "CPython",
+            platform_release: "21.6.0",
+            platform_system: "Darwin",
+            platform_version: "Darwin Kernel Version 21.6.0: Mon Aug 22 20:19:52 PDT 2022; root:xnu-8020.140.49~2/RELEASE_ARM64_T6000",
+            python_full_version: "3.11.5",
+            python_version: "3.11",
+            sys_platform: "darwin",
+        }).unwrap()
     });
 
     static PLATFORM: Platform = Platform::new(
@@ -79,114 +129,95 @@ mod resolver {
         Arch::Aarch64,
     );
 
-    static TAGS: Lazy<Tags> =
-        Lazy::new(|| Tags::from_env(&PLATFORM, (3, 11), "cpython", (3, 11), false).unwrap());
+    static TAGS: LazyLock<Tags> =
+        LazyLock::new(|| Tags::from_env(&PLATFORM, (3, 11), "cpython", (3, 11), false).unwrap());
 
     pub(crate) async fn resolve(
         manifest: Manifest,
         cache: Cache,
         client: &RegistryClient,
+        interpreter: &Interpreter,
+        universal: bool,
     ) -> Result<ResolutionGraph> {
+        let build_isolation = BuildIsolation::Isolated;
+        let build_options = BuildOptions::default();
+        let concurrency = Concurrency::default();
+        let config_settings = ConfigSettings::default();
+        let exclude_newer = Some(
+            NaiveDate::from_ymd_opt(2024, 8, 8)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap()
+                .and_utc()
+                .into(),
+        );
         let flat_index = FlatIndex::default();
-        let index = InMemoryIndex::default();
-        let interpreter = Interpreter::artificial(PLATFORM.clone(), MARKERS.clone());
-        let build_context = Context::new(cache, interpreter.clone());
+        let git = GitResolver::default();
         let hashes = HashStrategy::None;
+        let in_flight = InFlight::default();
+        let index = InMemoryIndex::default();
+        let index_locations = IndexLocations::default();
         let installed_packages = EmptyInstalledPackages;
+        let sources = SourceStrategy::default();
+        let options = OptionsBuilder::new().exclude_newer(exclude_newer).build();
+        let build_constraints = [];
+
+        let python_requirement = if universal {
+            PythonRequirement::from_requires_python(
+                interpreter,
+                &RequiresPython::greater_than_equal_version(&Version::new([3, 11])),
+            )
+        } else {
+            PythonRequirement::from_interpreter(interpreter)
+        };
+
+        let build_context = BuildDispatch::new(
+            client,
+            &cache,
+            &build_constraints,
+            interpreter,
+            &index_locations,
+            &flat_index,
+            &index,
+            &git,
+            &in_flight,
+            IndexStrategy::default(),
+            SetupPyStrategy::default(),
+            &config_settings,
+            build_isolation,
+            LinkMode::default(),
+            &build_options,
+            exclude_newer,
+            sources,
+            concurrency,
+            PreviewMode::Disabled,
+        );
+
+        let markers = if universal {
+            ResolverMarkers::universal(vec![])
+        } else {
+            ResolverMarkers::specific_environment(MARKERS.clone())
+        };
 
         let resolver = Resolver::new(
             manifest,
-            Options::default(),
-            &MARKERS,
-            &interpreter,
-            &TAGS,
-            client,
+            options,
+            &python_requirement,
+            markers,
+            Some(&TAGS),
             &flat_index,
             &index,
             &hashes,
             &build_context,
-            &installed_packages,
+            installed_packages,
+            DistributionDatabase::new(
+                client,
+                &build_context,
+                concurrency.downloads,
+                PreviewMode::Disabled,
+            ),
         )?;
 
         Ok(resolver.resolve().await?)
-    }
-
-    struct Context {
-        cache: Cache,
-        interpreter: Interpreter,
-        index_locations: IndexLocations,
-    }
-
-    impl Context {
-        fn new(cache: Cache, interpreter: Interpreter) -> Self {
-            Self {
-                cache,
-                interpreter,
-                index_locations: IndexLocations::default(),
-            }
-        }
-    }
-
-    impl BuildContext for Context {
-        type SourceDistBuilder = DummyBuilder;
-
-        fn cache(&self) -> &Cache {
-            &self.cache
-        }
-
-        fn interpreter(&self) -> &Interpreter {
-            &self.interpreter
-        }
-
-        fn build_isolation(&self) -> BuildIsolation {
-            BuildIsolation::Isolated
-        }
-
-        fn no_build(&self) -> &NoBuild {
-            &NoBuild::None
-        }
-
-        fn no_binary(&self) -> &NoBinary {
-            &NoBinary::None
-        }
-
-        fn setup_py_strategy(&self) -> SetupPyStrategy {
-            SetupPyStrategy::default()
-        }
-
-        fn index_locations(&self) -> &IndexLocations {
-            &self.index_locations
-        }
-
-        async fn resolve<'a>(&'a self, _: &'a [Requirement]) -> Result<Resolution> {
-            panic!("benchmarks should not build source distributions")
-        }
-
-        async fn install<'a>(&'a self, _: &'a Resolution, _: &'a PythonEnvironment) -> Result<()> {
-            panic!("benchmarks should not build source distributions")
-        }
-
-        async fn setup_build<'a>(
-            &'a self,
-            _: &'a Path,
-            _: Option<&'a Path>,
-            _: &'a str,
-            _: Option<&'a SourceDist>,
-            _: BuildKind,
-        ) -> Result<Self::SourceDistBuilder> {
-            Ok(DummyBuilder)
-        }
-    }
-
-    struct DummyBuilder;
-
-    impl SourceBuildTrait for DummyBuilder {
-        async fn metadata(&mut self) -> Result<Option<PathBuf>> {
-            panic!("benchmarks should not build source distributions")
-        }
-
-        async fn wheel<'a>(&'a self, _: &'a Path) -> Result<String> {
-            panic!("benchmarks should not build source distributions")
-        }
     }
 }

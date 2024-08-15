@@ -7,8 +7,10 @@ use directories::ProjectDirs;
 use crate::Cache;
 
 #[derive(Parser, Debug, Clone)]
+#[command(next_help_heading = "Cache options")]
 pub struct CacheArgs {
-    /// Avoid reading from or writing to the cache.
+    /// Avoid reading from or writing to the cache, instead using a temporary directory for the
+    /// duration of the operation.
     #[arg(
         global = true,
         long,
@@ -39,11 +41,11 @@ impl Cache {
         if no_cache {
             Cache::temp()
         } else if let Some(cache_dir) = cache_dir {
-            Cache::from_path(cache_dir)
+            Ok(Cache::from_path(cache_dir))
         } else if let Some(project_dirs) = ProjectDirs::from("", "", "uv") {
-            Cache::from_path(project_dirs.cache_dir())
+            Ok(Cache::from_path(project_dirs.cache_dir()))
         } else {
-            Cache::from_path(".uv_cache")
+            Ok(Cache::from_path(".uv_cache"))
         }
     }
 }
@@ -51,13 +53,6 @@ impl Cache {
 impl TryFrom<CacheArgs> for Cache {
     type Error = io::Error;
 
-    /// Prefer, in order:
-    /// 1. A temporary cache directory, if the user requested `--no-cache`.
-    /// 2. The specific cache directory specified by the user via `--cache-dir` or `UV_CACHE_DIR`.
-    /// 3. The system-appropriate cache directory.
-    /// 4. A `.uv_cache` directory in the current working directory.
-    ///
-    /// Returns an absolute cache dir.
     fn try_from(value: CacheArgs) -> Result<Self, Self::Error> {
         Cache::from_settings(value.no_cache, value.cache_dir)
     }

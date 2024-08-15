@@ -9,7 +9,7 @@ resolver = "2"
 
 [workspace.package]
 edition = "2021"
-rust-version = "1.77"
+rust-version = "1.80"
 homepage = "https://pypi.org/project/uv/"
 documentation = "https://pypi.org/project/uv/"
 repository = "https://github.com/astral-sh/uv"
@@ -23,13 +23,14 @@ distribution-types = { path = "crates/distribution-types" }
 install-wheel-rs = { path = "crates/install-wheel-rs", default-features = false }
 once-map = { path = "crates/once-map" }
 pep440_rs = { path = "crates/pep440-rs" }
-pep508_rs = { path = "crates/pep508-rs" }
+pep508_rs = { path = "crates/pep508-rs", features = ["non-pep508-extensions"] }
 platform-tags = { path = "crates/platform-tags" }
 pypi-types = { path = "crates/pypi-types" }
 requirements-txt = { path = "crates/requirements-txt" }
 uv-auth = { path = "crates/uv-auth" }
 uv-build = { path = "crates/uv-build" }
 uv-cache = { path = "crates/uv-cache" }
+uv-cli = { path = "crates/uv-cli" }
 uv-client = { path = "crates/uv-client" }
 uv-configuration = { path = "crates/uv-configuration" }
 uv-dispatch = { path = "crates/uv-dispatch" }
@@ -38,10 +39,18 @@ uv-extract = { path = "crates/uv-extract" }
 uv-fs = { path = "crates/uv-fs" }
 uv-git = { path = "crates/uv-git" }
 uv-installer = { path = "crates/uv-installer" }
-uv-interpreter = { path = "crates/uv-interpreter" }
+uv-macros = { path = "crates/uv-macros" }
 uv-normalize = { path = "crates/uv-normalize" }
+uv-options-metadata = { path = "crates/uv-options-metadata" }
+uv-python = { path = "crates/uv-python" }
 uv-requirements = { path = "crates/uv-requirements" }
 uv-resolver = { path = "crates/uv-resolver" }
+uv-pubgrub = { path = "crates/uv-pubgrub" }
+uv-scripts = { path = "crates/uv-scripts" }
+uv-settings = { path = "crates/uv-settings" }
+uv-shell = { path = "crates/uv-shell" }
+uv-state = { path = "crates/uv-state" }
+uv-tool = { path = "crates/uv-tool" }
 uv-types = { path = "crates/uv-types" }
 uv-version = { path = "crates/uv-version" }
 uv-virtualenv = { path = "crates/uv-virtualenv" }
@@ -53,108 +62,121 @@ anyhow = { version = "1.0.80" }
 async-channel = { version = "2.2.0" }
 async-compression = { version = "0.4.6" }
 async-trait = { version = "0.1.78" }
-async_http_range_reader = { version = "0.7.1" }
-async_zip = { git = "https://github.com/charliermarsh/rs-async-zip", rev = "1dcb40cfe1bf5325a6fd4bfcf9894db40241f585", features = ["deflate"] }
-axoupdater = { version = "0.5.0", default-features = false }
+async_http_range_reader = { version = "0.8.0" }
+async_zip = { git = "https://github.com/charliermarsh/rs-async-zip", rev = "011b24604fa7bc223daaad7712c0694bac8f0a87", features = ["deflate"] }
+axoupdater = { version = "0.7.0", default-features = false }
 backoff = { version = "0.4.0" }
 base64 = { version = "0.22.0" }
+boxcar = { version = "0.2.5" }
 cachedir = { version = "0.3.1" }
 cargo-util = { version = "0.2.8" }
 chrono = { version = "0.4.31" }
-clap = { version = "4.5.3" }
-clap_complete_command = { version = "0.5.1" }
+clap = { version = "4.5.9" }
+clap_complete_command = { version = "0.6.0" }
 configparser = { version = "3.0.4" }
 console = { version = "0.15.8", default-features = false }
 csv = { version = "1.3.0" }
 ctrlc = { version = "3.4.4" }
-dashmap = { version = "5.5.3" }
+dashmap = { version = "6.0.0" }
 data-encoding = { version = "2.5.0" }
 derivative = { version = "2.2.0" }
 directories = { version = "5.0.1" }
 dirs-sys = { version = "0.4.1" }
 dunce = { version = "1.0.4" }
-either = { version = "1.9.0" }
+either = { version = "1.12.0" }
 encoding_rs_io = { version = "0.1.7" }
 flate2 = { version = "1.0.28", default-features = false }
 fs-err = { version = "2.11.0" }
 fs2 = { version = "0.4.3" }
 futures = { version = "0.3.30" }
-git2 = { version = "0.18.1" }
 glob = { version = "0.3.1" }
 hex = { version = "0.4.3" }
-hmac = { version = "0.12.1" }
 home = { version = "0.5.9" }
 html-escape = { version = "0.2.13" }
 http = { version = "1.1.0" }
 indexmap = { version = "2.2.5" }
 indicatif = { version = "0.17.7" }
 indoc = { version = "2.0.4" }
-itertools = { version = "0.12.1" }
+itertools = { version = "0.13.0" }
 junction = { version = "1.0.0" }
-mailparse = { version = "0.14.0" }
+mailparse = { version = "0.15.0" }
 md-5 = { version = "0.10.6" }
+memchr = { version = "2.7.4" }
 miette = { version = "7.2.0" }
 nanoid = { version = "0.4.0" }
-once_cell = { version = "1.19.0" }
 owo-colors = { version = "4.0.0" }
 path-absolutize = { version = "3.1.1" }
+path-slash = { version = "0.2.1" }
 pathdiff = { version = "0.2.1" }
 petgraph = { version = "0.6.4" }
 platform-info = { version = "2.0.2" }
-pubgrub = { git = "https://github.com/astral-sh/pubgrub", rev = "c26e485213e39582c6f2e4d45c0328422670e7a7" }
+proc-macro2 = { version = "1.0.86" }
+pubgrub = { git = "https://github.com/astral-sh/pubgrub", rev = "2fac39371a47e7cb821e510aaa4de25405413d29" }
 pyo3 = { version = "0.21.0" }
 pyo3-log = { version = "0.10.0" }
-rand = { version = "0.8.5" }
+quote = { version = "1.0.36" }
 rayon = { version = "1.8.0" }
 reflink-copy = { version = "0.1.15" }
 regex = { version = "1.10.2" }
 reqwest = { version = "0.12.3", default-features = false, features = ["json", "gzip", "brotli", "stream", "rustls-tls", "rustls-tls-native-roots"] }
-reqwest-middleware = { version = "0.3.0" }
-reqwest-retry = { version = "0.5.0" }
+reqwest-middleware = { git = "https://github.com/astral-sh/reqwest-middleware", rev = "21ceec9a5fd2e8d6f71c3ea2999078fecbd13cbe" }
+reqwest-retry = { git = "https://github.com/astral-sh/reqwest-middleware", rev = "21ceec9a5fd2e8d6f71c3ea2999078fecbd13cbe" }
 rkyv = { version = "0.7.43", features = ["strict", "validation"] }
 rmp-serde = { version = "1.1.2" }
 rust-netrc = { version = "0.1.1" }
-rustc-hash = { version = "1.1.0" }
+rustc-hash = { version = "2.0.0" }
+rustix = { version = "0.38.34", default-features = false, features = ["fs", "std"] }
 same-file = { version = "1.0.6" }
 schemars = { version = "0.8.16", features = ["url"] }
 seahash = { version = "4.1.0" }
-serde = { version = "1.0.197" }
+serde = { version = "1.0.197", features = ["derive"] }
 serde_json = { version = "1.0.114" }
-sha1 = { version = "0.10.6" }
 sha2 = { version = "0.10.8" }
+smallvec = { version = "1.13.2" }
+syn = { version = "2.0.66" }
 sys-info = { version = "0.9.1" }
+target-lexicon = {version = "0.12.14" }
 tempfile = { version = "3.9.0" }
 textwrap = { version = "0.16.1" }
 thiserror = { version = "1.0.56" }
 tl = { version = "0.7.7" }
-tokio = { version = "1.35.1", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "sync"] }
+tokio = { version = "1.35.1", features = ["fs", "io-util", "macros", "process", "signal", "sync"] }
 tokio-stream = { version = "0.1.14" }
 tokio-tar = { version = "0.3.1" }
 tokio-util = { version = "0.7.10", features = ["compat"] }
 toml = { version = "0.8.12" }
+toml_edit = { version = "0.22.13" }
 tracing = { version = "0.1.40" }
 tracing-durations-export = { version = "0.2.0", features = ["plot"] }
-tracing-indicatif = { version = "0.3.6" }
 tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json", "registry"] }
-tracing-tree = { version = "0.3.0" }
+tracing-tree = { version = "0.4.0" }
 unicode-width = { version = "0.1.11" }
 unscanny = { version = "0.1.0" }
 url = { version = "2.5.0" }
 urlencoding = { version = "2.1.3" }
-wiremock = { version = "0.6.0" }
 walkdir = { version = "2.5.0" }
-which = { version = "6.0.0" }
-winapi = { version = "0.3.9" }
-zip = { version = "1.1.0", default-features = false, features = ["deflate"] }
+which = { version = "6.0.0", features = ["regex"] }
+windows-sys = { version = "0.52.0", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Ioctl", "Win32_System_IO"] }
+winreg = { version = "0.52.0" }
+winsafe = { version = "0.0.22", features = ["kernel"] }
+wiremock = { version = "0.6.0" }
+xz2 = { version = "0.1.7" }
+zip = { version = "0.6.6", default-features = false, features = ["deflate"] }
+
+[workspace.metadata.cargo-shear]
+ignored = ["flate2", "xz2"]
 
 [patch.crates-io]
 # For pyproject-toml
 pep440_rs = { path = "crates/pep440-rs" }
 pep508_rs = { path = "crates/pep508-rs" }
+reqwest-middleware = { git = "https://github.com/astral-sh/reqwest-middleware", rev = "21ceec9a5fd2e8d6f71c3ea2999078fecbd13cbe" }
 
 [workspace.lints.rust]
 unsafe_code = "warn"
 unreachable_pub = "warn"
+# TODO(konsti): Reactivate when check-cfg hits stable rust
+# unexpected_cfgs = { level = "warn", check-cfg = ['cfg(codspeed)'] }
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -2 }
@@ -163,6 +185,7 @@ char_lit_as_u8 = "allow"
 collapsible_else_if = "allow"
 collapsible_if = "allow"
 implicit_hasher = "allow"
+map_unwrap_or = "allow"
 match_same_arms = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
@@ -170,6 +193,7 @@ module_name_repetitions = "allow"
 must_use_candidate = "allow"
 similar_names = "allow"
 too_many_lines = "allow"
+too_many_arguments = "allow"
 # Disallowed restriction lints
 print_stdout = "warn"
 print_stderr = "warn"
@@ -182,9 +206,56 @@ rc_buffer = "warn"
 rc_mutex = "warn"
 rest_pat_in_fully_bound_structs = "warn"
 
+[profile.release]
+strip = true
+lto = "fat"
+
+# This profile disables LTO and is used for ppc64le musl cross builds which fail otherwise
+[profile.release-no-lto]
+inherits = "release"
+lto = false
+
+# This profile is meant to mimic the `release` profile as closely as
+# possible, but using settings that are more beneficial for iterative
+# development. That is, the `release` profile is intended for actually
+# building the release, where as `profiling` is meant for building `uv`
+# for running benchmarks.
+#
+# The main differences here are to avoid stripping debug information
+# and disabling lto. This does result in a mismatch between our release
+# configuration and our benchmarking configuration, which is unfortunate.
+# But compile times with `lto = true` are completely untenable:
+#
+#     $ cargo b --profile profiling -p uv
+#        Compiling uv-cli v0.0.1 (/home/andrew/astral/uv/crates/uv-cli)
+#        Compiling uv v0.2.34 (/home/andrew/astral/uv/crates/uv)
+#         Finished `profiling` profile [optimized + debuginfo] target(s) in 3m 47s
+#
+# Using `lto = "thin"` brings a massive improvement, but it's still slow:
+#
+#     $ cargo b --profile profiling -p uv
+#        Compiling uv v0.2.34 (/home/andrew/astral/uv/crates/uv)
+#         Finished `profiling` profile [optimized + debuginfo] target(s) in 53.98s
+#
+# But with `lto = false`:
+#
+#     $ cargo b --profile profiling -p uv
+#        Compiling uv v0.2.34 (/home/andrew/astral/uv/crates/uv)
+#         Finished `profiling` profile [optimized + debuginfo] target(s) in 30.09s
+#
+# We get more reasonable-ish compile times. At least, it's not enough
+# time to get up and get a cup of coffee before it completes.
+#
+# This setup does risk that we are measuring something in benchmarks
+# that we are shipping, but in order to make those two the same, we'd
+# either need to make compile times way worse for development, or take
+# a hit to binary size and a slight hit to runtime performance in our
+# release builds.
 [profile.profiling]
 inherits = "release"
-debug = true
+strip = false
+debug = "full"
+lto = false
 
 [profile.fast-build]
 inherits = "dev"
@@ -194,12 +265,11 @@ strip = "debuginfo"
 # The profile that 'cargo dist' will build with.
 [profile.dist]
 inherits = "release"
-lto = "thin"
 
 # Config for 'cargo dist'
 [workspace.metadata.dist]
 # The preferred cargo-dist version to use in CI (Cargo.toml SemVer syntax)
-cargo-dist-version = "0.13.3"
+cargo-dist-version = "0.18.0"
 # CI backends to support
 ci = ["github"]
 # The installers to generate for each app
@@ -229,19 +299,23 @@ targets = [
 ]
 # Whether to auto-include files like READMEs, LICENSEs, and CHANGELOGs (default true)
 auto-includes = false
-# Whether cargo-dist should create a Github Release or use an existing draft
+# Whether cargo-dist should create a GitHub Release or use an existing draft
 create-release = true
 # Publish jobs to run in CI
 pr-run-mode = "skip"
 # Whether CI should trigger releases with dispatches instead of tag pushes
 dispatch-releases = true
+# The stage during which the GitHub Release should be created
+github-release = "announce"
 # Whether CI should include auto-generated code to build local artifacts
 build-local-artifacts = false
 # Local artifacts jobs to run in CI
 local-artifacts-jobs = ["./build-binaries", "./build-docker"]
 # Publish jobs to run in CI
 publish-jobs = ["./publish-pypi"]
-# Skip checking whether the specified configuration files are up to date
-allow-dirty = ["ci"]
+# Announcement jobs to run in CI
+post-announce-jobs = ["./publish-docs"]
+# Custom permissions for GitHub Jobs
+github-custom-job-permissions = { "build-docker" = { packages = "write", contents = "read" } }
 # Whether to install an updater program
 install-updater = false

@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use url::Url;
 
-use cache_key::{digest, CanonicalUrl};
+use cache_key::{cache_digest, CanonicalUrl};
 use distribution_types::IndexUrl;
 
 /// Cache wheels and their metadata, both from remote wheels and built from source distributions.
@@ -14,6 +14,8 @@ pub enum WheelCache<'a> {
     Url(&'a Url),
     /// A path dependency, which we key by URL.
     Path(&'a Url),
+    /// An editable dependency, which we key by URL.
+    Editable(&'a Url),
     /// A Git dependency, which we key by URL and SHA.
     ///
     /// Note that this variant only exists for source distributions; wheels can't be delivered
@@ -28,16 +30,19 @@ impl<'a> WheelCache<'a> {
             WheelCache::Index(IndexUrl::Pypi(_)) => WheelCacheKind::Pypi.root(),
             WheelCache::Index(url) => WheelCacheKind::Index
                 .root()
-                .join(digest(&CanonicalUrl::new(url))),
+                .join(cache_digest(&CanonicalUrl::new(url))),
             WheelCache::Url(url) => WheelCacheKind::Url
                 .root()
-                .join(digest(&CanonicalUrl::new(url))),
+                .join(cache_digest(&CanonicalUrl::new(url))),
             WheelCache::Path(url) => WheelCacheKind::Path
                 .root()
-                .join(digest(&CanonicalUrl::new(url))),
+                .join(cache_digest(&CanonicalUrl::new(url))),
+            WheelCache::Editable(url) => WheelCacheKind::Editable
+                .root()
+                .join(cache_digest(&CanonicalUrl::new(url))),
             WheelCache::Git(url, sha) => WheelCacheKind::Git
                 .root()
-                .join(digest(&CanonicalUrl::new(url)))
+                .join(cache_digest(&CanonicalUrl::new(url)))
                 .join(sha),
         }
     }
@@ -58,6 +63,8 @@ pub(crate) enum WheelCacheKind {
     Url,
     /// A cache of data from a local path.
     Path,
+    /// A cache of data from an editable URL.
+    Editable,
     /// A cache of data from a Git repository.
     Git,
 }
@@ -69,6 +76,7 @@ impl WheelCacheKind {
             Self::Index => "index",
             Self::Url => "url",
             Self::Path => "path",
+            Self::Editable => "editable",
             Self::Git => "git",
         }
     }

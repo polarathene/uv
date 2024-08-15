@@ -1,6 +1,6 @@
 [package]
 name = "uv"
-version = "0.1.39"
+version = "0.2.36"
 edition = { workspace = true }
 rust-version = { workspace = true }
 homepage = { workspace = true }
@@ -14,48 +14,55 @@ default-run = "uv"
 workspace = true
 
 [dependencies]
+cache-key = { workspace = true }
 distribution-types = { workspace = true }
-install-wheel-rs = { workspace = true, features = ["clap"], default-features = false }
+install-wheel-rs = { workspace = true, default-features = false }
 pep440_rs = { workspace = true }
 pep508_rs = { workspace = true }
 platform-tags = { workspace = true }
 pypi-types = { workspace = true }
-requirements-txt = { workspace = true, features = ["http"] }
 uv-auth = { workspace = true }
-uv-cache = { workspace = true, features = ["clap"] }
+uv-cache = { workspace = true }
+uv-cli = { workspace = true }
 uv-client = { workspace = true }
-uv-configuration = { workspace = true, features = ["clap"] }
+uv-configuration = { workspace = true }
 uv-dispatch = { workspace = true }
 uv-distribution = { workspace = true }
 uv-fs = { workspace = true }
+uv-git = { workspace = true }
 uv-installer = { workspace = true }
-uv-interpreter = { workspace = true }
 uv-normalize = { workspace = true }
+uv-python = { workspace = true, features = ["schemars"]}
 uv-requirements = { workspace = true }
-uv-resolver = { workspace = true, features = ["clap"] }
+uv-resolver = { workspace = true }
+uv-scripts = { workspace = true }
+uv-settings = { workspace = true, features = ["schemars"] }
+uv-shell = { workspace = true }
+uv-tool = { workspace = true }
 uv-types = { workspace = true }
 uv-virtualenv = { workspace = true }
 uv-warnings = { workspace = true }
-uv-workspace = { workspace = true, features = ["schemars"] }
+uv-workspace = { workspace = true }
 
 anstream = { workspace = true }
 anyhow = { workspace = true }
 axoupdater = { workspace = true, features = ["github_releases", "tokio"], optional = true }
 chrono = { workspace = true }
 clap = { workspace = true, features = ["derive", "string", "wrap_help"] }
-clap_complete_command = { workspace = true }
 flate2 = { workspace = true, default-features = false }
 fs-err = { workspace = true, features = ["tokio"] }
+futures = { workspace = true }
 indexmap = { workspace = true }
 indicatif = { workspace = true }
+indoc = { workspace = true }
 itertools = { workspace = true }
 miette = { workspace = true, features = ["fancy"] }
 owo-colors = { workspace = true }
+rayon = { workspace = true }
 regex = { workspace = true }
 rustc-hash = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tempfile = { workspace = true }
 textwrap = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
@@ -66,12 +73,13 @@ tracing-subscriber = { workspace = true, features = ["json"] }
 tracing-tree = { workspace = true }
 unicode-width = { workspace = true }
 url = { workspace = true }
+which = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 mimalloc = { version = "0.1.39" }
 
 [target.'cfg(all(not(target_os = "windows"), not(target_os = "openbsd"), any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "powerpc64")))'.dependencies]
-tikv-jemallocator = { version = "0.5.4" }
+tikv-jemallocator = { version = "0.6.0" }
 
 [dev-dependencies]
 assert_cmd = { version = "2.0.14" }
@@ -79,14 +87,19 @@ assert_fs = { version = "1.1.0" }
 base64 = { version = "0.22.0" }
 byteorder = { version = "1.5.0" }
 filetime = { version = "0.2.23" }
+ignore = { version = "0.4.22" }
 indoc = { version = "2.0.4" }
 insta = { version = "1.36.1", features = ["filters", "json"] }
 predicates = { version = "3.0.4" }
-regex = { version = "1.10.3" }
+regex = { workspace = true }
 reqwest = { workspace = true, features = ["blocking"], default-features = false }
+zip = { workspace = true }
+
+[package.metadata.cargo-shear]
+ignored = ["flate2"]
 
 [features]
-default = ["flate2/zlib-ng", "python", "pypi", "git", "maturin", "python-patch"]
+default = ["flate2/zlib-ng", "python", "pypi", "git"]
 # Introduces a dependency on a local Python installation.
 python = []
 # Introduces a dependency on a local Python installation with specific patch versions.
@@ -95,10 +108,6 @@ python-patch = []
 pypi = []
 # Introduces a dependency on Git.
 git = []
-# Introduces a dependency on Maturin.
-maturin = []
 # Adds self-update functionality.
-self-update = ["axoupdater"]
+self-update = ["axoupdater", "uv-cli/self-update"]
 
-[build-dependencies]
-fs-err = { workspace = true }

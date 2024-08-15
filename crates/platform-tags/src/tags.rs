@@ -18,7 +18,7 @@ pub enum TagsError {
     #[error("Invalid priority: `{0}`")]
     InvalidPriority(usize, #[source] std::num::TryFromIntError),
     #[error("Only CPython can be freethreading, not: {0}")]
-    GilIsACpythonProblem(String),
+    GilIsACPythonProblem(String),
 }
 
 #[derive(Debug, Eq, Ord, PartialEq, PartialOrd, Clone)]
@@ -298,6 +298,7 @@ impl std::fmt::Display for Tags {
 enum Implementation {
     CPython { gil_disabled: bool },
     PyPy,
+    GraalPy,
     Pyston,
 }
 
@@ -310,6 +311,8 @@ impl Implementation {
             Self::CPython { .. } => format!("cp{}{}", python_version.0, python_version.1),
             // Ex) `pp39`
             Self::PyPy => format!("pp{}{}", python_version.0, python_version.1),
+            // Ex) `graalpy310`
+            Self::GraalPy => format!("graalpy{}{}", python_version.0, python_version.1),
             // Ex) `pt38``
             Self::Pyston => format!("pt{}{}", python_version.0, python_version.1),
         }
@@ -324,7 +327,7 @@ impl Implementation {
                 } else if gil_disabled {
                     // https://peps.python.org/pep-0703/#build-configuration-changes
                     // Python 3.13+ only, but it makes more sense to just rely on the sysconfig var.
-                    format!("cp{}{}t", python_version.0, python_version.1,)
+                    format!("cp{}{}t", python_version.0, python_version.1)
                 } else {
                     format!(
                         "cp{}{}{}",
@@ -342,6 +345,16 @@ impl Implementation {
                 implementation_version.0,
                 implementation_version.1
             ),
+            // Ex) `graalpy310_graalpy240_310_native
+            Self::GraalPy => format!(
+                "graalpy{}{}_graalpy{}{}_{}{}_native",
+                python_version.0,
+                python_version.1,
+                implementation_version.0,
+                implementation_version.1,
+                python_version.0,
+                python_version.1
+            ),
             // Ex) `pyston38-pyston_23`
             Self::Pyston => format!(
                 "pyston{}{}-pyston_{}{}",
@@ -355,12 +368,13 @@ impl Implementation {
 
     fn parse(name: &str, gil_disabled: bool) -> Result<Self, TagsError> {
         if gil_disabled && name != "cpython" {
-            return Err(TagsError::GilIsACpythonProblem(name.to_string()));
+            return Err(TagsError::GilIsACPythonProblem(name.to_string()));
         }
         match name {
             // Known and supported implementations.
             "cpython" => Ok(Self::CPython { gil_disabled }),
             "pypy" => Ok(Self::PyPy),
+            "graalpy" => Ok(Self::GraalPy),
             "pyston" => Ok(Self::Pyston),
             // Known but unsupported implementations.
             "python" => Err(TagsError::UnsupportedImplementation(name.to_string())),

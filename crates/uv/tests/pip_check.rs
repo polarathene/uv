@@ -6,45 +6,15 @@ use assert_fs::fixture::PathChild;
 
 use common::uv_snapshot;
 
-use crate::common::{get_bin, TestContext, EXCLUDE_NEWER};
+use crate::common::{get_bin, TestContext};
 
 mod common;
-
-/// Create a `pip install` command with options shared across scenarios.
-fn install_command(context: &TestContext) -> Command {
-    let mut command = Command::new(get_bin());
-    command
-        .arg("pip")
-        .arg("install")
-        .arg("--cache-dir")
-        .arg(context.cache_dir.path())
-        .arg("--exclude-newer")
-        .arg(EXCLUDE_NEWER)
-        .env("VIRTUAL_ENV", context.venv.as_os_str())
-        .env("UV_NO_WRAP", "1")
-        .current_dir(&context.temp_dir);
-
-    if cfg!(all(windows, debug_assertions)) {
-        // TODO(konstin): Reduce stack usage in debug mode enough that the tests pass with the
-        // default windows stack of 1MB
-        command.env("UV_STACK_SIZE", (2 * 1024 * 1024).to_string());
-    }
-
-    command
-}
 
 /// Create a `pip check` command with options shared across scenarios.
 fn check_command(context: &TestContext) -> Command {
     let mut command = Command::new(get_bin());
-    command
-        .arg("pip")
-        .arg("check")
-        .arg("--cache-dir")
-        .arg(context.cache_dir.path())
-        .env("VIRTUAL_ENV", context.venv.as_os_str())
-        .env("UV_NO_WRAP", "1")
-        .current_dir(&context.temp_dir);
-
+    command.arg("pip").arg("check");
+    context.add_shared_args(&mut command);
     command
 }
 
@@ -55,7 +25,8 @@ fn check_compatible_packages() -> Result<()> {
     let requirements_txt = context.temp_dir.child("requirements.txt");
     requirements_txt.write_str("requests==2.31.0")?;
 
-    uv_snapshot!(install_command(&context)
+    uv_snapshot!(context
+        .pip_install()
         .arg("-r")
         .arg("requirements.txt")
         .arg("--strict"), @r###"
@@ -65,7 +36,7 @@ fn check_compatible_packages() -> Result<()> {
 
     ----- stderr -----
     Resolved 5 packages in [TIME]
-    Downloaded 5 packages in [TIME]
+    Prepared 5 packages in [TIME]
     Installed 5 packages in [TIME]
      + certifi==2024.2.2
      + charset-normalizer==3.3.2
@@ -98,7 +69,8 @@ fn check_incompatible_packages() -> Result<()> {
     let requirements_txt = context.temp_dir.child("requirements.txt");
     requirements_txt.write_str("requests==2.31.0")?;
 
-    uv_snapshot!(install_command(&context)
+    uv_snapshot!(context
+        .pip_install()
         .arg("-r")
         .arg("requirements.txt")
         .arg("--strict"), @r###"
@@ -108,7 +80,7 @@ fn check_incompatible_packages() -> Result<()> {
 
     ----- stderr -----
     Resolved 5 packages in [TIME]
-    Downloaded 5 packages in [TIME]
+    Prepared 5 packages in [TIME]
     Installed 5 packages in [TIME]
      + certifi==2024.2.2
      + charset-normalizer==3.3.2
@@ -121,7 +93,8 @@ fn check_incompatible_packages() -> Result<()> {
     let requirements_txt_idna = context.temp_dir.child("requirements_idna.txt");
     requirements_txt_idna.write_str("idna==2.4")?;
 
-    uv_snapshot!(install_command(&context)
+    uv_snapshot!(context
+        .pip_install()
         .arg("-r")
         .arg("requirements_idna.txt")
         .arg("--strict"), @r###"
@@ -131,11 +104,12 @@ fn check_incompatible_packages() -> Result<()> {
 
     ----- stderr -----
     Resolved 1 package in [TIME]
-    Downloaded 1 package in [TIME]
+    Prepared 1 package in [TIME]
+    Uninstalled 1 package in [TIME]
     Installed 1 package in [TIME]
      - idna==3.6
      + idna==2.4
-    warning: The package `requests` requires `idna<4,>=2.5`, but `2.4` is installed.
+    warning: The package `requests` requires `idna<4,>=2.5`, but `2.4` is installed
     "###
     );
 
@@ -147,7 +121,7 @@ fn check_incompatible_packages() -> Result<()> {
     ----- stderr -----
     Checked 5 packages in [TIME]
     Found 1 incompatibility
-    The package `requests` requires `idna<4,>=2.5`, but `2.4` is installed.
+    The package `requests` requires `idna<4,>=2.5`, but `2.4` is installed
     "###
     );
 
@@ -164,7 +138,8 @@ fn check_multiple_incompatible_packages() -> Result<()> {
     let requirements_txt = context.temp_dir.child("requirements.txt");
     requirements_txt.write_str("requests==2.31.0")?;
 
-    uv_snapshot!(install_command(&context)
+    uv_snapshot!(context
+        .pip_install()
         .arg("-r")
         .arg("requirements.txt")
         .arg("--strict"), @r###"
@@ -174,7 +149,7 @@ fn check_multiple_incompatible_packages() -> Result<()> {
 
     ----- stderr -----
     Resolved 5 packages in [TIME]
-    Downloaded 5 packages in [TIME]
+    Prepared 5 packages in [TIME]
     Installed 5 packages in [TIME]
      + certifi==2024.2.2
      + charset-normalizer==3.3.2
@@ -187,7 +162,8 @@ fn check_multiple_incompatible_packages() -> Result<()> {
     let requirements_txt_two = context.temp_dir.child("requirements_two.txt");
     requirements_txt_two.write_str("idna==2.4\nurllib3==1.20")?;
 
-    uv_snapshot!(install_command(&context)
+    uv_snapshot!(context
+        .pip_install()
         .arg("-r")
         .arg("requirements_two.txt")
         .arg("--strict"), @r###"
@@ -197,14 +173,15 @@ fn check_multiple_incompatible_packages() -> Result<()> {
 
     ----- stderr -----
     Resolved 2 packages in [TIME]
-    Downloaded 2 packages in [TIME]
+    Prepared 2 packages in [TIME]
+    Uninstalled 2 packages in [TIME]
     Installed 2 packages in [TIME]
      - idna==3.6
      + idna==2.4
      - urllib3==2.2.1
      + urllib3==1.20
-    warning: The package `requests` requires `idna<4,>=2.5`, but `2.4` is installed.
-    warning: The package `requests` requires `urllib3<3,>=1.21.1`, but `1.20` is installed.
+    warning: The package `requests` requires `idna<4,>=2.5`, but `2.4` is installed
+    warning: The package `requests` requires `urllib3<3,>=1.21.1`, but `1.20` is installed
     "###
     );
 
@@ -216,8 +193,8 @@ fn check_multiple_incompatible_packages() -> Result<()> {
     ----- stderr -----
     Checked 5 packages in [TIME]
     Found 2 incompatibilities
-    The package `requests` requires `idna<4,>=2.5`, but `2.4` is installed.
-    The package `requests` requires `urllib3<3,>=1.21.1`, but `1.20` is installed.
+    The package `requests` requires `idna<4,>=2.5`, but `2.4` is installed
+    The package `requests` requires `urllib3<3,>=1.21.1`, but `1.20` is installed
     "###
     );
 

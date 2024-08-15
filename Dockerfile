@@ -58,7 +58,6 @@ ENV CARGO_BUILD_TARGET=x86_64-unknown-linux-musl
 FROM builder-${TARGETARCH} AS builder-app
 COPY crates/ crates/
 COPY Cargo.toml Cargo.lock .
-ARG APP_NAME=uv
 ARG CARGO_HOME=/usr/local/cargo
 ARG RUSTFLAGS="-C strip=symbols -C relocation-model=static -C target-feature=+crt-static -C opt-level=z"
 ARG TARGETPLATFORM
@@ -69,18 +68,19 @@ RUN \
   # CAUTION: As cargo uses multiple lock files (eg: `${CARGO_HOME}/{.global-cache,.package-cache,.package-cache-mutate}`), do not mount subdirs individually.
   --mount=type=cache,target="${CARGO_HOME}",id="cargo-cache" \
   # This cache mount is specific enough that you may not have any concurrent builds needing to share it, communicate that expectation explicitly:
-  --mount=type=cache,target="target/",id="cargo-target-${APP_NAME}-${TARGETPLATFORM}",sharing=locked \
+  --mount=type=cache,target="target/",id="cargo-target-uv-${TARGETPLATFORM}",sharing=locked \
   # These are redundant as they're easily reconstructed from cache above. Use TMPFS mounts to exclude from cache mounts:
   # TMPFS mount is a better choice than `rm -rf` command (which is risky on a cache mount that is shared across concurrent builds).
   --mount=type=tmpfs,target="${CARGO_HOME}/registry/src" \
   --mount=type=tmpfs,target="${CARGO_HOME}/git/checkouts" \
   <<HEREDOC
-    cargo zigbuild --release --bin "${APP_NAME}" --target "${CARGO_BUILD_TARGET}"
-    cp "target/${CARGO_BUILD_TARGET}/release/${APP_NAME}" "/${APP_NAME}"
+    cargo zigbuild --release --bin uv --bin uvx --target "${CARGO_BUILD_TARGET}"
+    cp "target/${CARGO_BUILD_TARGET}/release/uv" /
+    cp "target/${CARGO_BUILD_TARGET}/release/uvx" /
 HEREDOC
 
-# Final stage - Image containing only uv + empty /io dir:
+# Final stage - Image containing only /uv, /uvx + empty /io dir:
 FROM scratch
-COPY --from=builder-app /uv /uv
+COPY --from=builder-app /uv /uvx /
 WORKDIR /io
 ENTRYPOINT ["/uv"]

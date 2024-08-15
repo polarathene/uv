@@ -1,8 +1,7 @@
+pub use cache_key::{CacheKey, CacheKeyHasher};
 pub use canonical_url::{CanonicalUrl, RepositoryUrl};
-pub use digest::digest;
-pub use stable_hash::{StableHash, StableHasher};
+pub use digest::{cache_digest, hash_digest};
 
 mod cache_key;
 mod canonical_url;
 mod digest;
-mod stable_hash;

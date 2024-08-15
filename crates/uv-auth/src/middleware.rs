@@ -180,7 +180,7 @@ impl Middleware for AuthMiddleware {
         trace!("Request for {url} is unauthenticated, checking cache");
 
         // Check the cache for a URL match
-        let credentials = self.cache().get_url(request.url(), Username::none());
+        let credentials = self.cache().get_url(request.url(), &Username::none());
         if let Some(credentials) = credentials.as_ref() {
             request = credentials.authenticate(request);
             if credentials.password().is_some() {
@@ -191,7 +191,7 @@ impl Middleware for AuthMiddleware {
             .as_ref()
             .is_some_and(|credentials| credentials.username().is_some());
 
-        // Otherise, attempt an anonymous request
+        // Otherwise, attempt an anonymous request
         trace!("Attempting unauthenticated request for {url}");
 
         // <https://github.com/TrueLayer/reqwest-middleware/blob/abdf1844c37092d323683c2396b7eefda1418d3c/reqwest-retry/src/middleware.rs#L141-L149>
@@ -287,7 +287,7 @@ impl AuthMiddleware {
             .is_ok_and(|response| response.error_for_status_ref().is_ok())
         {
             trace!("Updating cached credentials for {url} to {credentials:?}");
-            self.cache().insert(&url, credentials)
+            self.cache().insert(&url, credentials);
         };
 
         result
@@ -322,7 +322,7 @@ impl AuthMiddleware {
             if credentials.is_some() {
                 trace!("Using credentials from previous fetch for {url}");
             } else {
-                trace!("Skipping fetch of credentails for {url}, previous attempt failed");
+                trace!("Skipping fetch of credentials for {url}, previous attempt failed");
             };
 
             return credentials;
@@ -330,7 +330,7 @@ impl AuthMiddleware {
 
         // Netrc support based on: <https://github.com/gribouille/netrc>.
         let credentials = if let Some(credentials) = self.netrc.as_ref().and_then(|netrc| {
-            trace!("Checking netrc for credentials for {url}");
+            debug!("Checking netrc for credentials for {url}");
             Credentials::from_netrc(
                 netrc,
                 url,
@@ -346,16 +346,15 @@ impl AuthMiddleware {
         //      implementation returns different credentials for different URLs in the
         //      same realm we will use the wrong credentials.
         } else if let Some(credentials) = match self.keyring {
-            Some(ref keyring) => match credentials.and_then(|credentials| credentials.username()) {
-                Some(username) => {
+            Some(ref keyring) => {
+                if let Some(username) = credentials.and_then(|credentials| credentials.username()) {
                     debug!("Checking keyring for credentials for {username}@{url}");
                     keyring.fetch(url, username).await
-                }
-                None => {
-                    trace!("Skipping keyring lookup for {url} with no username");
+                } else {
+                    debug!("Skipping keyring lookup for {url} with no username");
                     None
                 }
-            },
+            }
             None => None,
         } {
             debug!("Found credentials in keyring for {url}");
@@ -714,7 +713,7 @@ mod tests {
         assert_eq!(
             client.get(server.uri()).send().await?.status(),
             401,
-            "Credentials should not be pulled from the netrc file due to host mistmatch"
+            "Credentials should not be pulled from the netrc file due to host mismatch"
         );
 
         let mut url = Url::parse(&server.uri())?;
@@ -784,7 +783,14 @@ mod tests {
                 AuthMiddleware::new()
                     .with_cache(CredentialsCache::new())
                     .with_keyring(Some(KeyringProvider::dummy([(
-                        (base_url.host_str().unwrap(), username),
+                        (
+                            format!(
+                                "{}:{}",
+                                base_url.host_str().unwrap(),
+                                base_url.port().unwrap()
+                            ),
+                            username,
+                        ),
                         password,
                     )]))),
             )
@@ -832,6 +838,40 @@ mod tests {
         Ok(())
     }
 
+    /// We include ports in keyring requests, e.g., `localhost:8000` should be distinct from `localhost`,
+    /// unless the server is running on a default port, e.g., `localhost:80` is equivalent to `localhost`.
+    /// We don't unit test the latter case because it's possible to collide with a server a developer is
+    /// actually running.
+    #[test(tokio::test)]
+    async fn test_keyring_includes_non_standard_port() -> Result<(), Error> {
+        let username = "user";
+        let password = "password";
+        let server = start_test_server(username, password).await;
+        let base_url = Url::parse(&server.uri())?;
+
+        let client = test_client_builder()
+            .with(
+                AuthMiddleware::new()
+                    .with_cache(CredentialsCache::new())
+                    .with_keyring(Some(KeyringProvider::dummy([(
+                        // Omit the port from the keyring entry
+                        (base_url.host_str().unwrap(), username),
+                        password,
+                    )]))),
+            )
+            .build();
+
+        let mut url = base_url.clone();
+        url.set_username(username).unwrap();
+        assert_eq!(
+            client.get(url).send().await?.status(),
+            401,
+            "We should fail because the port is not present in the keyring entry"
+        );
+
+        Ok(())
+    }
+
     #[test(tokio::test)]
     async fn test_credentials_in_keyring_seed() -> Result<(), Error> {
         let username = "user";
@@ -849,7 +889,17 @@ mod tests {
         );
         let client = test_client_builder()
             .with(AuthMiddleware::new().with_cache(cache).with_keyring(Some(
-                KeyringProvider::dummy([((base_url.host_str().unwrap(), username), password)]),
+                KeyringProvider::dummy([(
+                    (
+                        format!(
+                            "{}:{}",
+                            base_url.host_str().unwrap(),
+                            base_url.port().unwrap()
+                        ),
+                        username,
+                    ),
+                    password,
+                )]),
             )))
             .build();
 
@@ -954,8 +1004,28 @@ mod tests {
                 AuthMiddleware::new()
                     .with_cache(CredentialsCache::new())
                     .with_keyring(Some(KeyringProvider::dummy([
-                        ((base_url_1.host_str().unwrap(), username_1), password_1),
-                        ((base_url_2.host_str().unwrap(), username_2), password_2),
+                        (
+                            (
+                                format!(
+                                    "{}:{}",
+                                    base_url_1.host_str().unwrap(),
+                                    base_url_1.port().unwrap()
+                                ),
+                                username_1,
+                            ),
+                            password_1,
+                        ),
+                        (
+                            (
+                                format!(
+                                    "{}:{}",
+                                    base_url_2.host_str().unwrap(),
+                                    base_url_2.port().unwrap()
+                                ),
+                                username_2,
+                            ),
+                            password_2,
+                        ),
                     ]))),
             )
             .build();
@@ -994,12 +1064,12 @@ mod tests {
         );
 
         assert_eq!(
-            client.get(format!("{}/foo", url_1)).send().await?.status(),
+            client.get(format!("{url_1}/foo")).send().await?.status(),
             200,
             "Requests can be to different paths in the same realm"
         );
         assert_eq!(
-            client.get(format!("{}/foo", url_2)).send().await?.status(),
+            client.get(format!("{url_2}/foo")).send().await?.status(),
             200,
             "Requests can be to different paths in the same realm"
         );
@@ -1031,7 +1101,7 @@ mod tests {
             .await;
 
         // Create a third, public prefix
-        // It will throw a 401 if it recieves credentials
+        // It will throw a 401 if it receives credentials
         Mock::given(method("GET"))
             .and(path_regex("/prefix_3.*"))
             .and(basic_auth(username_1, password_1))
@@ -1154,7 +1224,7 @@ mod tests {
             .await;
 
         // Create a third, public prefix
-        // It will throw a 401 if it recieves credentials
+        // It will throw a 401 if it receives credentials
         Mock::given(method("GET"))
             .and(path_regex("/prefix_3.*"))
             .and(basic_auth(username_1, password_1))
@@ -1188,8 +1258,28 @@ mod tests {
                 AuthMiddleware::new()
                     .with_cache(CredentialsCache::new())
                     .with_keyring(Some(KeyringProvider::dummy([
-                        ((base_url_1.host_str().unwrap(), username_1), password_1),
-                        ((base_url_2.host_str().unwrap(), username_2), password_2),
+                        (
+                            (
+                                format!(
+                                    "{}:{}",
+                                    base_url_1.host_str().unwrap(),
+                                    base_url_1.port().unwrap()
+                                ),
+                                username_1,
+                            ),
+                            password_1,
+                        ),
+                        (
+                            (
+                                format!(
+                                    "{}:{}",
+                                    base_url_2.host_str().unwrap(),
+                                    base_url_2.port().unwrap()
+                                ),
+                                username_2,
+                            ),
+                            password_2,
+                        ),
                     ]))),
             )
             .build();

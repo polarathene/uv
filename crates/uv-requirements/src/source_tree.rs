@@ -1,27 +1,37 @@
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use futures::{StreamExt, TryStreamExt};
+use futures::stream::FuturesOrdered;
+use futures::TryStreamExt;
 use url::Url;
 
-use distribution_types::{
-    BuildableSource, HashPolicy, PathSourceUrl, Requirement, SourceUrl, VersionId,
-};
-
-use uv_client::RegistryClient;
-use uv_distribution::{DistributionDatabase, Reporter};
+use distribution_types::{BuildableSource, DirectorySourceUrl, HashPolicy, SourceUrl, VersionId};
+use pep508_rs::RequirementOrigin;
+use pypi_types::Requirement;
+use uv_configuration::ExtrasSpecification;
+use uv_distribution::{DistributionDatabase, Reporter, RequiresDist};
 use uv_fs::Simplified;
+use uv_normalize::{ExtraName, PackageName};
 use uv_resolver::{InMemoryIndex, MetadataResponse};
 use uv_types::{BuildContext, HashStrategy};
 
-use crate::ExtrasSpecification;
+#[derive(Debug, Clone)]
+pub struct SourceTreeResolution {
+    /// The requirements sourced from the source trees.
+    pub requirements: Vec<Requirement>,
+    /// The names of the projects that were resolved.
+    pub project: PackageName,
+    /// The extras used when resolving the requirements.
+    pub extras: Vec<ExtraName>,
+}
 
 /// A resolver for requirements specified via source trees.
 ///
 /// Used, e.g., to determine the input requirements when a user specifies a `pyproject.toml`
 /// file, which may require running PEP 517 build hooks to extract metadata.
-pub struct SourceTreeResolver<'a, Context: BuildContext + Send + Sync> {
+pub struct SourceTreeResolver<'a, Context: BuildContext> {
     /// The requirements for the project.
     source_trees: Vec<PathBuf>,
     /// The extras to include when resolving requirements.
@@ -34,22 +44,21 @@ pub struct SourceTreeResolver<'a, Context: BuildContext + Send + Sync> {
     database: DistributionDatabase<'a, Context>,
 }
 
-impl<'a, Context: BuildContext + Send + Sync> SourceTreeResolver<'a, Context> {
+impl<'a, Context: BuildContext> SourceTreeResolver<'a, Context> {
     /// Instantiate a new [`SourceTreeResolver`] for a given set of `source_trees`.
     pub fn new(
         source_trees: Vec<PathBuf>,
         extras: &'a ExtrasSpecification,
         hasher: &'a HashStrategy,
-        context: &'a Context,
-        client: &'a RegistryClient,
         index: &'a InMemoryIndex,
+        database: DistributionDatabase<'a, Context>,
     ) -> Self {
         Self {
             source_trees,
             extras,
             hasher,
             index,
-            database: DistributionDatabase::new(client, context),
+            database,
         }
     }
 
@@ -63,34 +72,107 @@ impl<'a, Context: BuildContext + Send + Sync> SourceTreeResolver<'a, Context> {
     }
 
     /// Resolve the requirements from the provided source trees.
-    pub async fn resolve(self) -> Result<Vec<Requirement>> {
-        let requirements: Vec<_> = futures::stream::iter(self.source_trees.iter())
+    pub async fn resolve(self) -> Result<Vec<SourceTreeResolution>> {
+        let resolutions: Vec<_> = self
+            .source_trees
+            .iter()
             .map(|source_tree| async { self.resolve_source_tree(source_tree).await })
-            .buffered(50)
+            .collect::<FuturesOrdered<_>>()
             .try_collect()
             .await?;
-        Ok(requirements
-            .into_iter()
-            .flatten()
-            .map(Requirement::from_pep508)
-            .collect::<Result<_, _>>()?)
+        Ok(resolutions)
     }
 
-    /// Infer the package name for a given "unnamed" requirement.
-    async fn resolve_source_tree(&self, source_tree: &Path) -> Result<Vec<pep508_rs::Requirement>> {
+    /// Infer the dependencies for a directory dependency.
+    async fn resolve_source_tree(&self, path: &Path) -> Result<SourceTreeResolution> {
+        let metadata = self.resolve_requires_dist(path).await?;
+
+        let origin = RequirementOrigin::Project(path.to_path_buf(), metadata.name.clone());
+
+        // Determine the extras to include when resolving the requirements.
+        let extras = match self.extras {
+            ExtrasSpecification::All => metadata.provides_extras.as_slice(),
+            ExtrasSpecification::None => &[],
+            ExtrasSpecification::Some(extras) => extras,
+        };
+
+        // Determine the appropriate requirements to return based on the extras. This involves
+        // evaluating the `extras` expression in any markers, but preserving the remaining marker
+        // conditions.
+        let mut requirements: Vec<Requirement> = metadata
+            .requires_dist
+            .into_iter()
+            .map(|requirement| Requirement {
+                origin: Some(origin.clone()),
+                marker: requirement.marker.simplify_extras(extras),
+                ..requirement
+            })
+            .collect();
+
+        // Resolve any recursive extras.
+        loop {
+            // Find the first recursive requirement.
+            // TODO(charlie): Respect markers on recursive extras.
+            let Some(index) = requirements.iter().position(|requirement| {
+                requirement.name == metadata.name && requirement.marker.is_true()
+            }) else {
+                break;
+            };
+
+            // Remove the requirement that points to us.
+            let recursive = requirements.remove(index);
+
+            // Re-simplify the requirements.
+            for requirement in &mut requirements {
+                requirement.marker = requirement
+                    .marker
+                    .clone()
+                    .simplify_extras(&recursive.extras);
+            }
+        }
+
+        let project = metadata.name;
+        let extras = metadata.provides_extras;
+
+        Ok(SourceTreeResolution {
+            requirements,
+            project,
+            extras,
+        })
+    }
+
+    /// Resolve the [`RequiresDist`] metadata for a given source tree. Attempts to resolve the
+    /// requirements without building the distribution, even if the project contains (e.g.) a
+    /// dynamic version since, critically, we don't need to install the package itself; only its
+    /// dependencies.
+    async fn resolve_requires_dist(&self, path: &Path) -> Result<RequiresDist> {
         // Convert to a buildable source.
-        let path = fs_err::canonicalize(source_tree).with_context(|| {
+        let source_tree = fs_err::canonicalize(path).with_context(|| {
             format!(
                 "Failed to canonicalize path to source tree: {}",
-                source_tree.user_display()
+                path.user_display()
             )
         })?;
-        let Ok(url) = Url::from_directory_path(&path) else {
+        let source_tree = source_tree.parent().ok_or_else(|| {
+            anyhow::anyhow!(
+                "The file `{}` appears to be a `pyproject.toml`, `setup.py`, or `setup.cfg` file, which must be in a directory",
+                path.user_display()
+            )
+        })?;
+
+        // If the path is a `pyproject.toml`, attempt to extract the requirements statically.
+        if let Ok(metadata) = self.database.requires_dist(source_tree).await {
+            return Ok(metadata);
+        }
+
+        let Ok(url) = Url::from_directory_path(source_tree) else {
             return Err(anyhow::anyhow!("Failed to convert path to URL"));
         };
-        let source = SourceUrl::Path(PathSourceUrl {
+        let source = SourceUrl::Directory(DirectorySourceUrl {
             url: &url,
-            path: Cow::Owned(path),
+            install_path: Cow::Borrowed(source_tree),
+            lock_path: Cow::Borrowed(source_tree),
+            editable: false,
         });
 
         // Determine the hash policy. Since we don't have a package name, we perform a
@@ -98,10 +180,11 @@ impl<'a, Context: BuildContext + Send + Sync> SourceTreeResolver<'a, Context> {
         let hashes = match self.hasher {
             HashStrategy::None => HashPolicy::None,
             HashStrategy::Generate => HashPolicy::Generate,
-            HashStrategy::Validate { .. } => {
+            HashStrategy::Verify(_) => HashPolicy::Generate,
+            HashStrategy::Require(_) => {
                 return Err(anyhow::anyhow!(
                     "Hash-checking is not supported for local directories: {}",
-                    source_tree.user_display()
+                    path.user_display()
                 ));
             }
         };
@@ -109,17 +192,18 @@ impl<'a, Context: BuildContext + Send + Sync> SourceTreeResolver<'a, Context> {
         // Fetch the metadata for the distribution.
         let metadata = {
             let id = VersionId::from_url(source.url());
-            if let Some(archive) = self
-                .index
-                .get_metadata(&id)
-                .as_deref()
-                .and_then(|response| {
-                    if let MetadataResponse::Found(archive) = response {
-                        Some(archive)
-                    } else {
-                        None
-                    }
-                })
+            if let Some(archive) =
+                self.index
+                    .distributions()
+                    .get(&id)
+                    .as_deref()
+                    .and_then(|response| {
+                        if let MetadataResponse::Found(archive) = response {
+                            Some(archive)
+                        } else {
+                            None
+                        }
+                    })
             {
                 // If the metadata is already in the index, return it.
                 archive.metadata.clone()
@@ -130,37 +214,13 @@ impl<'a, Context: BuildContext + Send + Sync> SourceTreeResolver<'a, Context> {
 
                 // Insert the metadata into the index.
                 self.index
-                    .insert_metadata(id, MetadataResponse::Found(archive.clone()));
+                    .distributions()
+                    .done(id, Arc::new(MetadataResponse::Found(archive.clone())));
 
                 archive.metadata
             }
         };
 
-        // Determine the appropriate requirements to return based on the extras. This involves
-        // evaluating the `extras` expression in any markers, but preserving the remaining marker
-        // conditions.
-        match self.extras {
-            ExtrasSpecification::None => Ok(metadata.requires_dist),
-            ExtrasSpecification::All => Ok(metadata
-                .requires_dist
-                .into_iter()
-                .map(|requirement| pep508_rs::Requirement {
-                    marker: requirement
-                        .marker
-                        .and_then(|marker| marker.simplify_extras(&metadata.provides_extras)),
-                    ..requirement
-                })
-                .collect()),
-            ExtrasSpecification::Some(extras) => Ok(metadata
-                .requires_dist
-                .into_iter()
-                .map(|requirement| pep508_rs::Requirement {
-                    marker: requirement
-                        .marker
-                        .and_then(|marker| marker.simplify_extras(extras)),
-                    ..requirement
-                })
-                .collect()),
-        }
+        Ok(RequiresDist::from(metadata))
     }
 }

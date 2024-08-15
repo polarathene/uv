@@ -1,5 +1,6 @@
 use std::borrow::Borrow;
-use std::hash::Hash;
+use std::hash::{BuildHasher, Hash, RandomState};
+use std::pin::pin;
 use std::sync::Arc;
 
 use dashmap::DashMap;
@@ -14,11 +15,18 @@ use tokio::sync::Notify;
 ///
 /// Note that this always clones the value out of the underlying map. Because
 /// of this, it's common to wrap the `V` in an `Arc<V>` to make cloning cheap.
-pub struct OnceMap<K, V> {
-    items: DashMap<K, Value<V>>,
+pub struct OnceMap<K, V, H = RandomState> {
+    items: DashMap<K, Value<V>, H>,
 }
 
-impl<K: Eq + Hash, V: Clone> OnceMap<K, V> {
+impl<K: Eq + Hash, V: Clone, H: BuildHasher + Clone> OnceMap<K, V, H> {
+    // Create a [`OnceMap`] with the specified capacity and hasher.
+    pub fn with_capacity_and_hasher(capacity: usize, hasher: H) -> OnceMap<K, V, H> {
+        OnceMap {
+            items: DashMap::with_capacity_and_hasher(capacity, hasher),
+        }
+    }
+
     /// Register that you want to start a job.
     ///
     /// If this method returns `true`, you need to start a job and call [`OnceMap::done`] eventually
@@ -46,21 +54,37 @@ impl<K: Eq + Hash, V: Clone> OnceMap<K, V> {
     ///
     /// Will hang if [`OnceMap::done`] isn't called for this key.
     pub async fn wait(&self, key: &K) -> Option<V> {
-        let entry = self.items.get(key)?;
+        let notify = {
+            let entry = self.items.get(key)?;
+            match entry.value() {
+                Value::Filled(value) => return Some(value.clone()),
+                Value::Waiting(notify) => notify.clone(),
+            }
+        };
+
+        // Register the waiter for calls to `notify_waiters`.
+        let notification = pin!(notify.notified());
+
+        // Make sure the value wasn't inserted in-between us checking the map and registering the waiter.
+        if let Value::Filled(value) = self.items.get(key).expect("map is append-only").value() {
+            return Some(value.clone());
+        };
+
+        // Wait until the value is inserted.
+        notification.await;
+
+        let entry = self.items.get(key).expect("map is append-only");
         match entry.value() {
             Value::Filled(value) => Some(value.clone()),
-            Value::Waiting(notify) => {
-                let notify = notify.clone();
-                drop(entry);
-                notify.notified().await;
-
-                let entry = self.items.get(key).expect("map is append-only");
-                match entry.value() {
-                    Value::Filled(value) => Some(value.clone()),
-                    Value::Waiting(_) => unreachable!("notify was called"),
-                }
-            }
+            Value::Waiting(_) => unreachable!("notify was called"),
         }
+    }
+
+    /// Wait for the result of a job that is running, in a blocking context.
+    ///
+    /// Will hang if [`OnceMap::done`] isn't called for this key.
+    pub fn wait_blocking(&self, key: &K) -> Option<V> {
+        futures::executor::block_on(self.wait(key))
     }
 
     /// Return the result of a previous job, if any.
@@ -76,10 +100,25 @@ impl<K: Eq + Hash, V: Clone> OnceMap<K, V> {
     }
 }
 
-impl<K: Eq + Hash + Clone, V> Default for OnceMap<K, V> {
+impl<K: Eq + Hash + Clone, V, H: Default + BuildHasher + Clone> Default for OnceMap<K, V, H> {
     fn default() -> Self {
         Self {
-            items: DashMap::new(),
+            items: DashMap::with_hasher(H::default()),
+        }
+    }
+}
+
+impl<K, V, H> FromIterator<(K, V)> for OnceMap<K, V, H>
+where
+    K: Eq + Hash,
+    H: Default + Clone + BuildHasher,
+{
+    fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
+        OnceMap {
+            items: iter
+                .into_iter()
+                .map(|(k, v)| (k, Value::Filled(v)))
+                .collect(),
         }
     }
 }

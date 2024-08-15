@@ -1,11 +1,16 @@
+use either::Either;
 use pep508_rs::PackageName;
 
-use rustc_hash::FxHashSet;
+use pypi_types::Requirement;
+use rustc_hash::FxHashMap;
+use uv_cache::{Refresh, Timestamp};
 
 /// Whether to reinstall packages.
-#[derive(Debug, Clone)]
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub enum Reinstall {
     /// Don't reinstall any packages; respect the existing installation.
+    #[default]
     None,
 
     /// Reinstall all packages in the plan.
@@ -42,22 +47,35 @@ impl Reinstall {
     }
 }
 
+/// Create a [`Refresh`] policy by integrating the [`Reinstall`] policy.
+impl From<Reinstall> for Refresh {
+    fn from(value: Reinstall) -> Self {
+        match value {
+            Reinstall::None => Self::None(Timestamp::now()),
+            Reinstall::All => Self::All(Timestamp::now()),
+            Reinstall::Packages(packages) => Self::Packages(packages, Timestamp::now()),
+        }
+    }
+}
+
 /// Whether to allow package upgrades.
-#[derive(Debug, Clone)]
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub enum Upgrade {
     /// Prefer pinned versions from the existing lockfile, if possible.
+    #[default]
     None,
 
     /// Allow package upgrades for all packages, ignoring the existing lockfile.
     All,
 
     /// Allow package upgrades, but only for the specified packages.
-    Packages(FxHashSet<PackageName>),
+    Packages(FxHashMap<PackageName, Vec<Requirement>>),
 }
 
 impl Upgrade {
     /// Determine the upgrade strategy from the command-line arguments.
-    pub fn from_args(upgrade: Option<bool>, upgrade_package: Vec<PackageName>) -> Self {
+    pub fn from_args(upgrade: Option<bool>, upgrade_package: Vec<Requirement>) -> Self {
         match upgrade {
             Some(true) => Self::All,
             Some(false) => Self::None,
@@ -65,7 +83,15 @@ impl Upgrade {
                 if upgrade_package.is_empty() {
                     Self::None
                 } else {
-                    Self::Packages(upgrade_package.into_iter().collect())
+                    Self::Packages(upgrade_package.into_iter().fold(
+                        FxHashMap::default(),
+                        |mut map, requirement| {
+                            map.entry(requirement.name.clone())
+                                .or_default()
+                                .push(requirement);
+                            map
+                        },
+                    ))
                 }
             }
         }
@@ -79,5 +105,42 @@ impl Upgrade {
     /// Returns `true` if all packages should be upgraded.
     pub fn is_all(&self) -> bool {
         matches!(self, Self::All)
+    }
+
+    /// Returns `true` if the specified package should be upgraded.
+    pub fn contains(&self, package_name: &PackageName) -> bool {
+        match &self {
+            Self::None => false,
+            Self::All => true,
+            Self::Packages(packages) => packages.contains_key(package_name),
+        }
+    }
+
+    /// Returns an iterator over the constraints.
+    ///
+    /// When upgrading, users can provide bounds on the upgrade (e.g., `--upgrade-package flask<3`).
+    pub fn constraints(&self) -> impl Iterator<Item = &Requirement> {
+        if let Self::Packages(packages) = self {
+            Either::Right(
+                packages
+                    .values()
+                    .flat_map(|requirements| requirements.iter()),
+            )
+        } else {
+            Either::Left(std::iter::empty())
+        }
+    }
+}
+
+/// Create a [`Refresh`] policy by integrating the [`Upgrade`] policy.
+impl From<Upgrade> for Refresh {
+    fn from(value: Upgrade) -> Self {
+        match value {
+            Upgrade::None => Self::None(Timestamp::now()),
+            Upgrade::All => Self::All(Timestamp::now()),
+            Upgrade::Packages(packages) => {
+                Self::Packages(packages.into_keys().collect::<Vec<_>>(), Timestamp::now())
+            }
+        }
     }
 }

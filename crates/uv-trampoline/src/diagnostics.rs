@@ -1,17 +1,12 @@
-extern crate alloc;
-
-use alloc::{ffi::CString, string::String};
-use core::{
-    convert::Infallible,
-    ptr::{addr_of_mut, null, null_mut},
-};
+use std::convert::Infallible;
+use std::ffi::CString;
+use std::io::Write;
+use std::os::windows::io::AsRawHandle;
+use std::string::String;
 
 use ufmt_write::uWrite;
-use windows_sys::Win32::{
-    Storage::FileSystem::WriteFile,
-    System::Console::{GetStdHandle, STD_ERROR_HANDLE},
-    UI::WindowsAndMessaging::MessageBoxA,
-};
+use windows::core::PCSTR;
+use windows::Win32::UI::WindowsAndMessaging::{MessageBoxA, MESSAGEBOX_STYLE};
 
 #[macro_export]
 macro_rules! eprintln {
@@ -43,24 +38,12 @@ impl uWrite for StringBuffer {
 
 #[cold]
 pub(crate) fn write_diagnostic(message: &str) {
-    unsafe {
-        let handle = GetStdHandle(STD_ERROR_HANDLE);
-        let mut written: u32 = 0;
-        let mut remaining = message;
-        while !remaining.is_empty() {
-            let ok = WriteFile(
-                handle,
-                remaining.as_ptr(),
-                remaining.len() as u32,
-                addr_of_mut!(written),
-                null_mut(),
-            );
-            if ok == 0 {
-                let nul_terminated = CString::new(message.as_bytes()).unwrap_unchecked();
-                MessageBoxA(0, nul_terminated.as_ptr() as *const _, null(), 0);
-                return;
-            }
-            remaining = remaining.get_unchecked(written as usize..);
-        }
+    let mut stderr = std::io::stderr();
+    if !stderr.as_raw_handle().is_null() {
+        let _ = stderr.write_all(message.as_bytes());
+    } else {
+        let nul_terminated = unsafe { CString::new(message.as_bytes()).unwrap_unchecked() };
+        let pcstr_message = PCSTR::from_raw(nul_terminated.as_ptr() as *const _);
+        unsafe { MessageBoxA(None, pcstr_message, None, MESSAGEBOX_STYLE(0)) };
     }
 }

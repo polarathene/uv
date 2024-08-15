@@ -2,77 +2,91 @@
 //!
 //! <https://packaging.python.org/en/latest/specifications/source-distribution-format/>
 
+use fs_err as fs;
+use indoc::formatdoc;
+use itertools::Itertools;
+use regex::Regex;
+use rustc_hash::FxHashMap;
+use serde::de::{value, SeqAccess, Visitor};
+use serde::{de, Deserialize, Deserializer};
 use std::ffi::OsString;
 use std::fmt::{Display, Formatter};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Output};
+use std::rc::Rc;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::LazyLock;
 use std::{env, iter};
-
-use fs_err as fs;
-use indoc::formatdoc;
-use itertools::Itertools;
-use once_cell::sync::Lazy;
-use regex::Regex;
-use rustc_hash::FxHashMap;
-use serde::de::{value, SeqAccess, Visitor};
-use serde::{de, Deserialize, Deserializer};
 use tempfile::{tempdir_in, TempDir};
 use thiserror::Error;
 use tokio::process::Command;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
 use tracing::{debug, info_span, instrument, Instrument};
 
-use distribution_types::{ParsedUrlError, Requirement, Resolution};
+use distribution_types::Resolution;
 use pep440_rs::Version;
 use pep508_rs::PackageName;
+use pypi_types::{Requirement, VerbatimParsedUrl};
 use uv_configuration::{BuildKind, ConfigSettings, SetupPyStrategy};
-use uv_fs::{PythonExt, Simplified};
-use uv_interpreter::{Interpreter, PythonEnvironment};
+use uv_fs::{rename_with_retry, PythonExt, Simplified};
+use uv_python::{Interpreter, PythonEnvironment};
 use uv_types::{BuildContext, BuildIsolation, SourceBuildTrait};
 
 /// e.g. `pygraphviz/graphviz_wrap.c:3020:10: fatal error: graphviz/cgraph.h: No such file or directory`
-static MISSING_HEADER_RE: Lazy<Regex> = Lazy::new(|| {
+static MISSING_HEADER_RE_GCC: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r".*\.(?:c|c..|h|h..):\d+:\d+: fatal error: (.*\.(?:h|h..)): No such file or directory",
     )
     .unwrap()
 });
 
+/// e.g. `pygraphviz/graphviz_wrap.c:3023:10: fatal error: 'graphviz/cgraph.h' file not found`
+static MISSING_HEADER_RE_CLANG: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r".*\.(?:c|c..|h|h..):\d+:\d+: fatal error: '(.*\.(?:h|h..))' file not found")
+        .unwrap()
+});
+
+/// e.g. `pygraphviz/graphviz_wrap.c(3023): fatal error C1083: Cannot open include file: 'graphviz/cgraph.h': No such file or directory`
+static MISSING_HEADER_RE_MSVC: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r".*\.(?:c|c..|h|h..)\(\d+\): fatal error C1083: Cannot open include file: '(.*\.(?:h|h..))': No such file or directory")
+        .unwrap()
+});
+
 /// e.g. `/usr/bin/ld: cannot find -lncurses: No such file or directory`
-static LD_NOT_FOUND_RE: Lazy<Regex> = Lazy::new(|| {
+static LD_NOT_FOUND_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"/usr/bin/ld: cannot find -l([a-zA-Z10-9]+): No such file or directory").unwrap()
 });
 
 /// e.g. `error: invalid command 'bdist_wheel'`
-static WHEEL_NOT_FOUND_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"error: invalid command 'bdist_wheel'").unwrap());
+static WHEEL_NOT_FOUND_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"error: invalid command 'bdist_wheel'").unwrap());
+
+/// e.g. `ModuleNotFoundError: No module named 'torch'`
+static TORCH_NOT_FOUND_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"ModuleNotFoundError: No module named 'torch'").unwrap());
 
 /// The default backend to use when PEP 517 is used without a `build-system` section.
-static DEFAULT_BACKEND: Lazy<Pep517Backend> = Lazy::new(|| Pep517Backend {
+static DEFAULT_BACKEND: LazyLock<Pep517Backend> = LazyLock::new(|| Pep517Backend {
     backend: "setuptools.build_meta:__legacy__".to_string(),
     backend_path: None,
-    requirements: vec![Requirement::from_pep508(
+    requirements: vec![Requirement::from(
         pep508_rs::Requirement::from_str("setuptools >= 40.8.0").unwrap(),
-    )
-    .unwrap()],
+    )],
 });
 
 /// The requirements for `--legacy-setup-py` builds.
-static SETUP_PY_REQUIREMENTS: Lazy<[Requirement; 2]> = Lazy::new(|| {
+static SETUP_PY_REQUIREMENTS: LazyLock<[Requirement; 2]> = LazyLock::new(|| {
     [
-        Requirement::from_pep508(pep508_rs::Requirement::from_str("setuptools >= 40.8.0").unwrap())
-            .unwrap(),
-        Requirement::from_pep508(pep508_rs::Requirement::from_str("wheel").unwrap()).unwrap(),
+        Requirement::from(pep508_rs::Requirement::from_str("setuptools >= 40.8.0").unwrap()),
+        Requirement::from(pep508_rs::Requirement::from_str("wheel").unwrap()),
     ]
 });
 
 #[derive(Error, Debug)]
 pub enum Error {
     #[error(transparent)]
-    IO(#[from] io::Error),
+    Io(#[from] io::Error),
     #[error("Invalid source distribution: {0}")]
     InvalidSourceDist(String),
     #[error("Invalid `pyproject.toml`")]
@@ -104,12 +118,10 @@ pub enum Error {
     },
     #[error("Failed to build PATH for build script")]
     BuildScriptPath(#[source] env::JoinPathsError),
-    #[error("Failed to parse requirements from build backend")]
-    DirectUrl(#[source] ParsedUrlError),
 }
 
 #[derive(Debug)]
-pub enum MissingLibrary {
+enum MissingLibrary {
     Header(String),
     Linker(String),
     PythonPackage(String),
@@ -142,7 +154,9 @@ impl Display for MissingHeaderCause {
             MissingLibrary::PythonPackage(package) => {
                 write!(
                     f,
-                    "This error likely indicates that you need to `uv pip install {package}` into the build environment for {version_id}",
+                    "This error likely indicates that {version_id} depends on {package}, but doesn't declare it as a build dependency. \
+                        If {version_id} is a first-party package, consider adding {package} to its `build-system.requires`. \
+                        Otherwise, `uv pip install {package}` into the environment and re-run with `--no-build-isolation`.",
                     package = package, version_id = self.version_id
                 )
             }
@@ -161,8 +175,11 @@ impl Error {
 
         // In the cases i've seen it was the 5th and 3rd last line (see test case), 10 seems like a reasonable cutoff
         let missing_library = stderr.lines().rev().take(10).find_map(|line| {
-            if let Some((_, [header])) =
-                MISSING_HEADER_RE.captures(line.trim()).map(|c| c.extract())
+            if let Some((_, [header])) = MISSING_HEADER_RE_GCC
+                .captures(line.trim())
+                .or(MISSING_HEADER_RE_CLANG.captures(line.trim()))
+                .or(MISSING_HEADER_RE_MSVC.captures(line.trim()))
+                .map(|c| c.extract())
             {
                 Some(MissingLibrary::Header(header.to_string()))
             } else if let Some((_, [library])) =
@@ -171,6 +188,8 @@ impl Error {
                 Some(MissingLibrary::Linker(library.to_string()))
             } else if WHEEL_NOT_FOUND_RE.is_match(line.trim()) {
                 Some(MissingLibrary::PythonPackage("wheel".to_string()))
+            } else if TORCH_NOT_FOUND_RE.is_match(line.trim()) {
+                Some(MissingLibrary::PythonPackage("torch".to_string()))
             } else {
                 None
             }
@@ -201,11 +220,11 @@ impl Error {
 /// A `pyproject.toml` as specified in PEP 517.
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
-pub struct PyProjectToml {
+struct PyProjectToml {
     /// Build-related data
-    pub build_system: Option<BuildSystem>,
+    build_system: Option<BuildSystem>,
     /// Project metadata
-    pub project: Option<Project>,
+    project: Option<Project>,
 }
 
 /// The `[project]` section of a pyproject.toml as specified in PEP 621.
@@ -214,26 +233,26 @@ pub struct PyProjectToml {
 /// informing wheel builds.
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
-pub struct Project {
+struct Project {
     /// The name of the project
-    pub name: PackageName,
+    name: PackageName,
     /// The version of the project as supported by PEP 440
-    pub version: Option<Version>,
+    version: Option<Version>,
     /// Specifies which fields listed by PEP 621 were intentionally unspecified so another tool
     /// can/will provide such metadata dynamically.
-    pub dynamic: Option<Vec<String>>,
+    dynamic: Option<Vec<String>>,
 }
 
 /// The `[build-system]` section of a pyproject.toml as specified in PEP 517.
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
-pub struct BuildSystem {
+struct BuildSystem {
     /// PEP 508 dependencies required to execute the build system.
-    pub requires: Vec<pep508_rs::Requirement>,
+    requires: Vec<pep508_rs::Requirement<VerbatimParsedUrl>>,
     /// A string naming a Python object that will be used to perform the build.
-    pub build_backend: Option<String>,
+    build_backend: Option<String>,
     /// Specify that their backend code is hosted in-tree, this key contains a list of directories.
-    pub backend_path: Option<BackendPath>,
+    backend_path: Option<BackendPath>,
 }
 
 impl BackendPath {
@@ -244,7 +263,7 @@ impl BackendPath {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BackendPath(Vec<String>);
+struct BackendPath(Vec<String>);
 
 impl<'de> Deserialize<'de> for BackendPath {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -335,13 +354,13 @@ impl Pep517Backend {
     }
 }
 
-/// Uses an [`Arc`] internally, clone freely.
+/// Uses an [`Rc`] internally, clone freely.
 #[derive(Debug, Default, Clone)]
 pub struct SourceBuildContext {
     /// An in-memory resolution of the default backend's requirements for PEP 517 builds.
-    default_resolution: Arc<Mutex<Option<Resolution>>>,
+    default_resolution: Rc<Mutex<Option<Resolution>>>,
     /// An in-memory resolution of the build requirements for `--legacy-setup-py` builds.
-    setup_py_resolution: Arc<Mutex<Option<Resolution>>>,
+    setup_py_resolution: Rc<Mutex<Option<Resolution>>>,
 }
 
 /// Holds the state through a series of PEP 517 frontend to backend calls or a single setup.py
@@ -377,6 +396,8 @@ pub struct SourceBuild {
     modified_path: OsString,
     /// Environment variables to be passed in during metadata or wheel building
     environment_variables: FxHashMap<OsString, OsString>,
+    /// Runner for Python scripts.
+    runner: PythonRunner,
 }
 
 impl SourceBuild {
@@ -384,7 +405,6 @@ impl SourceBuild {
     /// contents from an archive if necessary.
     ///
     /// `source_dist` is for error reporting only.
-    #[allow(clippy::too_many_arguments)]
     pub async fn setup(
         source: &Path,
         subdirectory: Option<&Path>,
@@ -397,8 +417,9 @@ impl SourceBuild {
         build_isolation: BuildIsolation<'_>,
         build_kind: BuildKind,
         mut environment_variables: FxHashMap<OsString, OsString>,
+        concurrent_builds: usize,
     ) -> Result<Self, Error> {
-        let temp_dir = tempdir_in(build_context.cache().root())?;
+        let temp_dir = build_context.cache().environment()?;
 
         let source_tree = if let Some(subdir) = subdirectory {
             source.join(subdir)
@@ -413,21 +434,25 @@ impl SourceBuild {
             Self::extract_pep517_backend(&source_tree, setup_py, &default_backend)
                 .map_err(|err| *err)?;
 
+        let package_name = project.clone().map(|p| p.name);
+
         // Create a virtual environment, or install into the shared environment if requested.
-        let venv = match build_isolation {
-            BuildIsolation::Isolated => uv_virtualenv::create_venv(
-                &temp_dir.path().join(".venv"),
+        let venv = if let Some(venv) = build_isolation.shared_environment(package_name.as_ref()) {
+            venv.clone()
+        } else {
+            uv_virtualenv::create_venv(
+                temp_dir.path(),
                 interpreter.clone(),
                 uv_virtualenv::Prompt::None,
                 false,
                 false,
-            )?,
-            BuildIsolation::Shared(venv) => venv.clone(),
+                false,
+            )?
         };
 
         // Setup the build environment. If build isolation is disabled, we assume the build
         // environment is already setup.
-        if build_isolation.is_isolated() {
+        if build_isolation.is_isolated(package_name.as_ref()) {
             let resolved_requirements = Self::get_resolved_requirements(
                 build_context,
                 source_build_context,
@@ -476,9 +501,11 @@ impl SourceBuild {
 
         // Create the PEP 517 build environment. If build isolation is disabled, we assume the build
         // environment is already setup.
-        if build_isolation.is_isolated() {
+        let runner = PythonRunner::new(concurrent_builds);
+        if build_isolation.is_isolated(package_name.as_ref()) {
             if let Some(pep517_backend) = &pep517_backend {
                 create_pep517_build_environment(
+                    &runner,
                     &source_tree,
                     &venv,
                     pep517_backend,
@@ -506,6 +533,7 @@ impl SourceBuild {
             version_id,
             environment_variables,
             modified_path,
+            runner,
         })
     }
 
@@ -580,9 +608,8 @@ impl SourceBuild {
                         requirements: build_system
                             .requires
                             .into_iter()
-                            .map(Requirement::from_pep508)
-                            .collect::<Result<_, _>>()
-                            .map_err(|err| Box::new(Error::DirectUrl(err)))?,
+                            .map(Requirement::from)
+                            .collect(),
                     }
                 } else {
                     // If a `pyproject.toml` is present, but `[build-system]` is missing, proceed with
@@ -660,23 +687,23 @@ impl SourceBuild {
         fs::create_dir(&metadata_directory)?;
 
         // Write the hook output to a file so that we can read it back reliably.
-        let outfile = self
-            .temp_dir
-            .path()
-            .join("prepare_metadata_for_build_wheel.txt");
+        let outfile = self.temp_dir.path().join(format!(
+            "prepare_metadata_for_build_{}.txt",
+            self.build_kind
+        ));
 
         debug!(
-            "Calling `{}.prepare_metadata_for_build_wheel()`",
-            pep517_backend.backend
+            "Calling `{}.prepare_metadata_for_build_{}()`",
+            pep517_backend.backend, self.build_kind,
         );
         let script = formatdoc! {
             r#"
             {}
             import json
 
-            prepare_metadata_for_build_wheel = getattr(backend, "prepare_metadata_for_build_wheel", None)
-            if prepare_metadata_for_build_wheel:
-                dirname = prepare_metadata_for_build_wheel("{}", config_settings={})
+            prepare_metadata_for_build = getattr(backend, "prepare_metadata_for_build_{}", None)
+            if prepare_metadata_for_build:
+                dirname = prepare_metadata_for_build("{}", {})
             else:
                 dirname = None
 
@@ -684,27 +711,30 @@ impl SourceBuild {
                 fp.write(dirname or "")
             "#,
             pep517_backend.backend_import(),
+            self.build_kind,
             escape_path_for_python(&metadata_directory),
             self.config_settings.escape_for_python(),
             outfile.escape_for_python(),
         };
         let span = info_span!(
             "run_python_script",
-            script="prepare_metadata_for_build_wheel",
+            script=format!("prepare_metadata_for_build_{}", self.build_kind),
             python_version = %self.venv.interpreter().python_version()
         );
-        let output = run_python_script(
-            &self.venv,
-            &script,
-            &self.source_tree,
-            &self.environment_variables,
-            &self.modified_path,
-        )
-        .instrument(span)
-        .await?;
+        let output = self
+            .runner
+            .run_script(
+                &self.venv,
+                &script,
+                &self.source_tree,
+                &self.environment_variables,
+                &self.modified_path,
+            )
+            .instrument(span)
+            .await?;
         if !output.status.success() {
             return Err(Error::from_command_output(
-                "Build backend failed to determine metadata through `prepare_metadata_for_build_wheel`".to_string(),
+                format!("Build backend failed to determine metadata through `prepare_metadata_for_build_{}`", self.build_kind),
                 &output,
                 &self.version_id,
             ));
@@ -737,26 +767,23 @@ impl SourceBuild {
 
             let from = tmp_dir.path().join(&filename);
             let to = wheel_dir.join(&filename);
-            fs_err::rename(from, to)?;
+            rename_with_retry(from, to).await?;
             Ok(filename)
         } else {
             if self.build_kind != BuildKind::Wheel {
                 return Err(Error::EditableSetupPy);
             }
             // We checked earlier that setup.py exists.
-            let python_interpreter = self.venv.python_executable();
             let span = info_span!(
                 "run_python_script",
                 script="setup.py bdist_wheel",
                 python_version = %self.venv.interpreter().python_version()
             );
-            let output = Command::new(python_interpreter)
-                .args(["setup.py", "bdist_wheel"])
-                .current_dir(self.source_tree.simplified())
-                .output()
+            let output = self
+                .runner
+                .run_setup_py(&self.venv, "bdist_wheel", &self.source_tree)
                 .instrument(span)
-                .await
-                .map_err(|err| Error::CommandFailed(python_interpreter.to_path_buf(), err))?;
+                .await?;
             if !output.status.success() {
                 return Err(Error::from_command_output(
                     "Failed building wheel through setup.py".to_string(),
@@ -803,22 +830,26 @@ impl SourceBuild {
             .join(format!("build_{}.txt", self.build_kind));
 
         debug!(
-            "Calling `{}.build_{}(metadata_directory={})`",
-            pep517_backend.backend, self.build_kind, metadata_directory
+            r#"Calling `{}.build_{}("{}", {}, {})`"#,
+            pep517_backend.backend,
+            self.build_kind,
+            wheel_dir.escape_for_python(),
+            self.config_settings.escape_for_python(),
+            metadata_directory,
         );
         let script = formatdoc! {
             r#"
             {}
 
-            wheel_filename = backend.build_{}("{}", metadata_directory={}, config_settings={})
+            wheel_filename = backend.build_{}("{}", {}, {})
             with open("{}", "w") as fp:
                 fp.write(wheel_filename)
             "#,
             pep517_backend.backend_import(),
             self.build_kind,
             wheel_dir.escape_for_python(),
-            metadata_directory,
             self.config_settings.escape_for_python(),
+            metadata_directory,
             outfile.escape_for_python()
         };
         let span = info_span!(
@@ -826,15 +857,17 @@ impl SourceBuild {
             script=format!("build_{}", self.build_kind),
             python_version = %self.venv.interpreter().python_version()
         );
-        let output = run_python_script(
-            &self.venv,
-            &script,
-            &self.source_tree,
-            &self.environment_variables,
-            &self.modified_path,
-        )
-        .instrument(span)
-        .await?;
+        let output = self
+            .runner
+            .run_script(
+                &self.venv,
+                &script,
+                &self.source_tree,
+                &self.environment_variables,
+                &self.modified_path,
+            )
+            .instrument(span)
+            .await?;
         if !output.status.success() {
             return Err(Error::from_command_output(
                 format!(
@@ -878,8 +911,8 @@ fn escape_path_for_python(path: &Path) -> String {
 }
 
 /// Not a method because we call it before the builder is completely initialized
-#[allow(clippy::too_many_arguments)]
 async fn create_pep517_build_environment(
+    runner: &PythonRunner,
     source_tree: &Path,
     venv: &PythonEnvironment,
     pep517_backend: &Pep517Backend,
@@ -908,7 +941,7 @@ async fn create_pep517_build_environment(
 
             get_requires_for_build = getattr(backend, "get_requires_for_build_{}", None)
             if get_requires_for_build:
-                requires = get_requires_for_build(config_settings={})
+                requires = get_requires_for_build({})
             else:
                 requires = []
 
@@ -925,15 +958,16 @@ async fn create_pep517_build_environment(
         script=format!("get_requires_for_build_{}", build_kind),
         python_version = %venv.interpreter().python_version()
     );
-    let output = run_python_script(
-        venv,
-        &script,
-        source_tree,
-        environment_variables,
-        modified_path,
-    )
-    .instrument(span)
-    .await?;
+    let output = runner
+        .run_script(
+            venv,
+            &script,
+            source_tree,
+            environment_variables,
+            modified_path,
+        )
+        .instrument(span)
+        .await?;
     if !output.status.success() {
         return Err(Error::from_command_output(
             format!("Build backend failed to determine extra requires with `build_{build_kind}()`"),
@@ -954,7 +988,7 @@ async fn create_pep517_build_environment(
     })?;
 
     // Deserialize the requirements from the output file.
-    let extra_requires: Vec<pep508_rs::Requirement> = serde_json::from_slice::<Vec<pep508_rs::Requirement>>(&contents).map_err(|err| {
+    let extra_requires: Vec<pep508_rs::Requirement<VerbatimParsedUrl>> = serde_json::from_slice::<Vec<pep508_rs::Requirement<VerbatimParsedUrl>>>(&contents).map_err(|err| {
         Error::from_command_output(
             format!(
                 "Build backend failed to return extra requires with `get_requires_for_build_{build_kind}`: {err}"
@@ -963,11 +997,7 @@ async fn create_pep517_build_environment(
             version_id,
         )
     })?;
-    let extra_requires: Vec<_> = extra_requires
-        .into_iter()
-        .map(Requirement::from_pep508)
-        .collect::<Result<_, _>>()
-        .map_err(Error::DirectUrl)?;
+    let extra_requires: Vec<_> = extra_requires.into_iter().map(Requirement::from).collect();
 
     // Some packages (such as tqdm 4.66.1) list only extra requires that have already been part of
     // the pyproject.toml requires (in this case, `wheel`). We can skip doing the whole resolution
@@ -998,27 +1028,72 @@ async fn create_pep517_build_environment(
     Ok(())
 }
 
-/// It is the caller's responsibility to create an informative span.
-async fn run_python_script(
-    venv: &PythonEnvironment,
-    script: &str,
-    source_tree: &Path,
-    environment_variables: &FxHashMap<OsString, OsString>,
-    modified_path: &OsString,
-) -> Result<Output, Error> {
-    Command::new(venv.python_executable())
-        .args(["-c", script])
-        .current_dir(source_tree.simplified())
-        // Pass in remaining environment variables
-        .envs(environment_variables)
-        // Set the modified PATH
-        .env("PATH", modified_path)
-        // Activate the venv
-        .env("VIRTUAL_ENV", venv.root())
-        .env("CLICOLOR_FORCE", "1")
-        .output()
-        .await
-        .map_err(|err| Error::CommandFailed(venv.python_executable().to_path_buf(), err))
+/// A runner that manages the execution of external python processes with a
+/// concurrency limit.
+struct PythonRunner {
+    control: Semaphore,
+}
+
+impl PythonRunner {
+    /// Create a `PythonRunner` with the provided concurrency limit.
+    fn new(concurrency: usize) -> PythonRunner {
+        PythonRunner {
+            control: Semaphore::new(concurrency),
+        }
+    }
+
+    /// Spawn a process that runs a python script in the provided environment.
+    ///
+    /// If the concurrency limit has been reached this method will wait until a pending
+    /// script completes before spawning this one.
+    ///
+    /// Note: It is the caller's responsibility to create an informative span.
+    async fn run_script(
+        &self,
+        venv: &PythonEnvironment,
+        script: &str,
+        source_tree: &Path,
+        environment_variables: &FxHashMap<OsString, OsString>,
+        modified_path: &OsString,
+    ) -> Result<Output, Error> {
+        let _permit = self.control.acquire().await.unwrap();
+
+        Command::new(venv.python_executable())
+            .args(["-c", script])
+            .current_dir(source_tree.simplified())
+            // Pass in remaining environment variables
+            .envs(environment_variables)
+            // Set the modified PATH
+            .env("PATH", modified_path)
+            // Activate the venv
+            .env("VIRTUAL_ENV", venv.root())
+            .env("CLICOLOR_FORCE", "1")
+            .output()
+            .await
+            .map_err(|err| Error::CommandFailed(venv.python_executable().to_path_buf(), err))
+    }
+
+    /// Spawn a process that runs a `setup.py` script.
+    ///
+    /// If the concurrency limit has been reached this method will wait until a pending
+    /// script completes before spawning this one.
+    ///
+    /// Note: It is the caller's responsibility to create an informative span.
+    async fn run_setup_py(
+        &self,
+        venv: &PythonEnvironment,
+        script: &str,
+        source_tree: &Path,
+    ) -> Result<Output, Error> {
+        let _permit = self.control.acquire().await.unwrap();
+
+        Command::new(venv.python_executable())
+            .args(["setup.py", script])
+            .current_dir(source_tree.simplified())
+            .output()
+            .await
+            .map_err(|err| Error::CommandFailed(venv.python_executable().to_path_buf(), err))
+    }
 }
 
 #[cfg(test)]
@@ -1175,7 +1250,7 @@ mod test {
         "###);
         insta::assert_snapshot!(
             std::error::Error::source(&err).unwrap(),
-            @"This error likely indicates that you need to `uv pip install wheel` into the build environment for pygraphviz-1.11"
+            @"This error likely indicates that pygraphviz-1.11 depends on wheel, but doesn't declare it as a build dependency. If pygraphviz-1.11 is a first-party package, consider adding wheel to its `build-system.requires`. Otherwise, `uv pip install wheel` into the environment and re-run with `--no-build-isolation`."
         );
     }
 }

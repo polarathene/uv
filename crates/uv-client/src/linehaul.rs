@@ -68,7 +68,7 @@ impl LineHaul {
             .iter()
             .find_map(|&var_name| env::var(var_name).ok().map(|_| true));
 
-        let libc = match platform.map(|platform| platform.os()) {
+        let libc = match platform.map(platform_tags::Platform::os) {
             Some(Os::Manylinux { major, minor }) => Some(Libc {
                 lib: Some("glibc".to_string()),
                 version: Some(format!("{major}.{minor}")),
@@ -94,7 +94,7 @@ impl LineHaul {
                 libc,
             })
         } else if cfg!(target_os = "macos") {
-            let version = match platform.map(|platform| platform.os()) {
+            let version = match platform.map(platform_tags::Platform::os) {
                 Some(Os::Macos { major, minor }) => Some(format!("{major}.{minor}")),
                 _ => None,
             };
@@ -118,17 +118,17 @@ impl LineHaul {
                 name: Some("uv".to_string()),
                 version: Some(version().to_string()),
             }),
-            python: Some(markers.python_full_version.version.to_string()),
+            python: Some(markers.python_full_version().version.to_string()),
             implementation: Option::from(Implementation {
-                name: Some(markers.platform_python_implementation.to_string()),
-                version: Some(markers.python_full_version.version.to_string()),
+                name: Some(markers.platform_python_implementation().to_string()),
+                version: Some(markers.python_full_version().version.to_string()),
             }),
             distro,
             system: Option::from(System {
-                name: Some(markers.platform_system.to_string()),
-                release: Some(markers.platform_release.to_string()),
+                name: Some(markers.platform_system().to_string()),
+                release: Some(markers.platform_release().to_string()),
             }),
-            cpu: Some(markers.platform_machine.to_string()),
+            cpu: Some(markers.platform_machine().to_string()),
             // Should probably always be None in uv.
             openssl_version: None,
             // Should probably always be None in uv.

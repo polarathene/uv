@@ -13,7 +13,7 @@ use assert_cmd::prelude::*;
 
 use common::{venv_to_interpreter};
 
-use crate::common::{get_bin, uv_snapshot, TestContext};
+use crate::common::{build_vendor_links_url, get_bin, packse_index_url, uv_snapshot, TestContext};
 
 mod common;
 
@@ -47,29 +47,17 @@ fn command(context: &TestContext) -> Command {
         .arg("pip")
         .arg("install")
         .arg("--index-url")
-        .arg("{{index_url}}")
+        .arg(packse_index_url())
         .arg("--find-links")
-        .arg("{{vendor_links}}")
-        .arg("--cache-dir")
-        .arg(context.cache_dir.path())
-        .env("VIRTUAL_ENV", context.venv.as_os_str())
-        .env("UV_NO_WRAP", "1")
-        .current_dir(&context.temp_dir);
-
-    if cfg!(all(windows, debug_assertions)) {
-        // TODO(konstin): Reduce stack usage in debug mode enough that the tests pass with the
-        // default windows stack of 1MB
-        command.env("UV_STACK_SIZE", (8 * 1024 * 1024).to_string());
-    }
-
+        .arg(build_vendor_links_url());
+    context.add_shared_args(&mut command);
+    command.env_remove("UV_EXCLUDE_NEWER");
     command
 }
 
 {{#scenarios}}
 
-{{#description_lines}}
-/// {{.}}
-{{/description_lines}}
+/// {{description}}
 ///
 /// ```text
 /// {{name}}
@@ -105,9 +93,9 @@ fn {{module_name}}() {
         {{/root.requires}}, @r###"<snapshot>
     "###);
 
-    {{#expected.explanation_lines}}
-    // {{.}}
-    {{/expected.explanation_lines}}
+    {{#expected.explanation}}
+    // {{expected.explanation}}
+    {{/expected.explanation}}
     {{#expected.satisfiable}}
     {{#expected.packages}}
     assert_installed(

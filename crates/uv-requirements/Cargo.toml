@@ -9,14 +9,16 @@ repository.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 cache-key = { workspace = true }
 distribution-filename = { workspace = true }
 distribution-types = { workspace = true }
-pep440_rs = { workspace = true }
 pep508_rs = { workspace = true }
 pypi-types = { workspace = true }
-requirements-txt = { workspace = true, features = ["reqwest"] }
+requirements-txt = { workspace = true, features = ["http"] }
 uv-client = { workspace = true }
 uv-configuration = { workspace = true }
 uv-distribution = { workspace = true }
@@ -26,6 +28,7 @@ uv-normalize = { workspace = true }
 uv-resolver = { workspace = true, features = ["clap"] }
 uv-types = { workspace = true }
 uv-warnings = { workspace = true }
+uv-workspace = { workspace = true }
 
 anyhow = { workspace = true }
 configparser = { workspace = true }
@@ -33,24 +36,9 @@ console = { workspace = true }
 ctrlc = { workspace = true }
 fs-err = { workspace = true, features = ["tokio"] }
 futures = { workspace = true }
-glob = { workspace = true }
-indexmap = { workspace = true }
-itertools = { workspace = true }
-path-absolutize = { workspace = true }
 rustc-hash = { workspace = true }
-schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 toml = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
-
-[features]
-schemars = ["dep:schemars"]
-
-[dev-dependencies]
-indoc = "2.0.5"
-insta = "1.38.0"
-
-[lints]
-workspace = true

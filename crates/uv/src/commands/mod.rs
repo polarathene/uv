@@ -8,22 +8,47 @@ pub(crate) use cache_clean::cache_clean;
 pub(crate) use cache_dir::cache_dir;
 pub(crate) use cache_prune::cache_prune;
 use distribution_types::InstalledMetadata;
-pub(crate) use pip_check::pip_check;
-pub(crate) use pip_compile::{extra_name_with_clap_error, pip_compile};
-pub(crate) use pip_freeze::pip_freeze;
-pub(crate) use pip_install::pip_install;
-pub(crate) use pip_list::pip_list;
-pub(crate) use pip_show::pip_show;
-pub(crate) use pip_sync::pip_sync;
-pub(crate) use pip_uninstall::pip_uninstall;
-pub(crate) use run::run;
+pub(crate) use help::help;
+pub(crate) use pip::check::pip_check;
+pub(crate) use pip::compile::pip_compile;
+pub(crate) use pip::freeze::pip_freeze;
+pub(crate) use pip::install::pip_install;
+pub(crate) use pip::list::pip_list;
+pub(crate) use pip::show::pip_show;
+pub(crate) use pip::sync::pip_sync;
+pub(crate) use pip::tree::pip_tree;
+pub(crate) use pip::uninstall::pip_uninstall;
+pub(crate) use project::add::add;
+pub(crate) use project::init::init;
+pub(crate) use project::lock::lock;
+pub(crate) use project::remove::remove;
+pub(crate) use project::run::{parse_script, run};
+pub(crate) use project::sync::sync;
+pub(crate) use project::tree::tree;
+pub(crate) use python::dir::dir as python_dir;
+pub(crate) use python::find::find as python_find;
+pub(crate) use python::install::install as python_install;
+pub(crate) use python::list::list as python_list;
+pub(crate) use python::pin::pin as python_pin;
+pub(crate) use python::uninstall::uninstall as python_uninstall;
 #[cfg(feature = "self-update")]
 pub(crate) use self_update::self_update;
+pub(crate) use tool::dir::dir as tool_dir;
+pub(crate) use tool::install::install as tool_install;
+pub(crate) use tool::list::list as tool_list;
+pub(crate) use tool::run::run as tool_run;
+pub(crate) use tool::run::ToolRunCommand;
+pub(crate) use tool::uninstall::uninstall as tool_uninstall;
+pub(crate) use tool::update_shell::update_shell as tool_update_shell;
+pub(crate) use tool::upgrade::upgrade as tool_upgrade;
 use uv_cache::Cache;
 use uv_fs::Simplified;
+use uv_git::GitResolver;
 use uv_installer::compile_tree;
-use uv_interpreter::PythonEnvironment;
 use uv_normalize::PackageName;
+use uv_python::PythonEnvironment;
+use uv_resolver::InMemoryIndex;
+use uv_types::InFlight;
 pub(crate) use venv::venv;
 pub(crate) use version::version;
 
@@ -32,16 +57,13 @@ use crate::printer::Printer;
 mod cache_clean;
 mod cache_dir;
 mod cache_prune;
-mod pip_check;
-mod pip_compile;
-mod pip_freeze;
-mod pip_install;
-mod pip_list;
-mod pip_show;
-mod pip_sync;
-mod pip_uninstall;
-mod reporters;
-mod run;
+mod help;
+pub(crate) mod pip;
+mod project;
+mod python;
+pub(crate) mod reporters;
+mod tool;
+
 #[cfg(feature = "self-update")]
 mod self_update;
 mod venv;
@@ -50,15 +72,12 @@ mod version;
 #[derive(Copy, Clone)]
 pub(crate) enum ExitStatus {
     /// The command succeeded.
-    #[allow(unused)]
     Success,
 
     /// The command failed due to an error in the user input.
-    #[allow(unused)]
     Failure,
 
     /// The command failed with an unexpected error.
-    #[allow(unused)]
     Error,
 }
 
@@ -109,24 +128,6 @@ pub(super) struct DryRunEvent<T: Display> {
     kind: ChangeEventKind,
 }
 
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
-pub(crate) enum VersionFormat {
-    Text,
-    Json,
-}
-
-#[derive(Debug, Default, Clone, clap::ValueEnum)]
-pub(crate) enum ListFormat {
-    /// Display the list of packages in a human-readable table.
-    #[default]
-    Columns,
-    /// Display the list of packages in a `pip freeze`-like format, with one package per line
-    /// alongside its version.
-    Freeze,
-    /// Display the list of packages in a machine-readable JSON format.
-    Json,
-}
-
 /// Compile all Python source files in site-packages to bytecode, to speed up the
 /// initial run of any subsequent executions.
 ///
@@ -139,7 +140,7 @@ pub(super) async fn compile_bytecode(
     let start = std::time::Instant::now();
     let mut files = 0;
     for site_packages in venv.site_packages() {
-        files += compile_tree(site_packages, venv.python_executable(), cache.root())
+        files += compile_tree(&site_packages, venv.python_executable(), cache.root())
             .await
             .with_context(|| {
                 format!(
@@ -153,9 +154,9 @@ pub(super) async fn compile_bytecode(
         printer.stderr(),
         "{}",
         format!(
-            "Bytecode compiled {} in {}",
+            "Bytecode compiled {} {}",
             format!("{files} file{s}").bold(),
-            elapsed(start.elapsed())
+            format!("in {}", elapsed(start.elapsed())).dimmed()
         )
         .dimmed()
     )?;
@@ -176,4 +177,15 @@ pub(super) fn human_readable_bytes(bytes: u64) -> (f32, &'static str) {
     let bytes = bytes as f32;
     let i = ((bytes.log2() / 10.0) as usize).min(UNITS.len() - 1);
     (bytes / 1024_f32.powi(i as i32), UNITS[i])
+}
+
+/// Shared state used during resolution and installation.
+#[derive(Default)]
+pub(crate) struct SharedState {
+    /// The resolved Git references.
+    pub(crate) git: GitResolver,
+    /// The fetched package versions and metadata.
+    pub(crate) index: InMemoryIndex,
+    /// The downloaded distributions.
+    pub(crate) in_flight: InFlight,
 }

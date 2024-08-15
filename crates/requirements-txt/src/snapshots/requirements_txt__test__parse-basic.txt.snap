@@ -23,7 +23,12 @@ RequirementsTxt {
                             ),
                         ),
                     ),
-                    marker: None,
+                    marker: true,
+                    origin: Some(
+                        File(
+                            "<REQUIREMENTS_DIR>/basic.txt",
+                        ),
+                    ),
                 },
             ),
             hashes: [],
@@ -47,7 +52,12 @@ RequirementsTxt {
                             ),
                         ),
                     ),
-                    marker: None,
+                    marker: true,
+                    origin: Some(
+                        File(
+                            "<REQUIREMENTS_DIR>/basic.txt",
+                        ),
+                    ),
                 },
             ),
             hashes: [],
@@ -71,7 +81,12 @@ RequirementsTxt {
                             ),
                         ),
                     ),
-                    marker: None,
+                    marker: true,
+                    origin: Some(
+                        File(
+                            "<REQUIREMENTS_DIR>/basic.txt",
+                        ),
+                    ),
                 },
             ),
             hashes: [],
@@ -95,7 +110,12 @@ RequirementsTxt {
                             ),
                         ),
                     ),
-                    marker: None,
+                    marker: true,
+                    origin: Some(
+                        File(
+                            "<REQUIREMENTS_DIR>/basic.txt",
+                        ),
+                    ),
                 },
             ),
             hashes: [],
@@ -119,7 +139,12 @@ RequirementsTxt {
                             ),
                         ),
                     ),
-                    marker: None,
+                    marker: true,
+                    origin: Some(
+                        File(
+                            "<REQUIREMENTS_DIR>/basic.txt",
+                        ),
+                    ),
                 },
             ),
             hashes: [],
@@ -143,7 +168,12 @@ RequirementsTxt {
                             ),
                         ),
                     ),
-                    marker: None,
+                    marker: true,
+                    origin: Some(
+                        File(
+                            "<REQUIREMENTS_DIR>/basic.txt",
+                        ),
+                    ),
                 },
             ),
             hashes: [],

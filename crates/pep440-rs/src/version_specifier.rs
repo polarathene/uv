@@ -1,6 +1,9 @@
 #[cfg(feature = "pyo3")]
 use std::hash::{Hash, Hasher};
-use std::{cmp::Ordering, str::FromStr};
+
+use std::cmp::Ordering;
+use std::ops::Bound;
+use std::str::FromStr;
 
 #[cfg(feature = "pyo3")]
 use pyo3::{
@@ -34,7 +37,18 @@ use crate::{
 /// // VersionSpecifiers derefs into a list of specifiers
 /// assert_eq!(version_specifiers.iter().position(|specifier| *specifier.operator() == Operator::LessThan), Some(1));
 /// ```
-#[derive(Eq, PartialEq, Debug, Clone, Hash, rkyv::Archive, rkyv::Deserialize, rkyv::Serialize)]
+#[derive(
+    Eq,
+    PartialEq,
+    Ord,
+    PartialOrd,
+    Debug,
+    Clone,
+    Hash,
+    rkyv::Archive,
+    rkyv::Deserialize,
+    rkyv::Serialize,
+)]
 #[archive(check_bytes)]
 #[archive_attr(derive(Debug))]
 #[cfg_attr(feature = "pyo3", pyclass(sequence))]
@@ -57,6 +71,11 @@ impl VersionSpecifiers {
     /// Whether all specifiers match the given version.
     pub fn contains(&self, version: &Version) -> bool {
         self.iter().all(|specifier| specifier.contains(version))
+    }
+
+    /// Returns `true` if the specifiers are empty is empty.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 }
 
@@ -92,6 +111,12 @@ impl std::fmt::Display for VersionSpecifiers {
             }
         }
         Ok(())
+    }
+}
+
+impl Default for VersionSpecifiers {
+    fn default() -> Self {
+        Self::empty()
     }
 }
 
@@ -250,7 +275,18 @@ impl std::error::Error for VersionSpecifiersParseError {}
 /// let version_specifier = VersionSpecifier::from_str("== 1.*").unwrap();
 /// assert!(version_specifier.contains(&version));
 /// ```
-#[derive(Eq, PartialEq, Debug, Clone, Hash, rkyv::Archive, rkyv::Deserialize, rkyv::Serialize)]
+#[derive(
+    Eq,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Debug,
+    Clone,
+    Hash,
+    rkyv::Archive,
+    rkyv::Deserialize,
+    rkyv::Serialize,
+)]
 #[archive(check_bytes)]
 #[archive_attr(derive(Debug))]
 #[cfg_attr(feature = "pyo3", pyclass(get_all))]
@@ -380,6 +416,44 @@ impl VersionSpecifier {
             version,
         }
     }
+    /// `!=<version>`
+    pub fn not_equals_version(version: Version) -> Self {
+        Self {
+            operator: Operator::NotEqual,
+            version,
+        }
+    }
+
+    /// `>=<version>`
+    pub fn greater_than_equal_version(version: Version) -> Self {
+        Self {
+            operator: Operator::GreaterThanEqual,
+            version,
+        }
+    }
+    /// `><version>`
+    pub fn greater_than_version(version: Version) -> Self {
+        Self {
+            operator: Operator::GreaterThan,
+            version,
+        }
+    }
+
+    /// `<=<version>`
+    pub fn less_than_equal_version(version: Version) -> Self {
+        Self {
+            operator: Operator::LessThanEqual,
+            version,
+        }
+    }
+
+    /// `<<version>`
+    pub fn less_than_version(version: Version) -> Self {
+        Self {
+            operator: Operator::LessThan,
+            version,
+        }
+    }
 
     /// Get the operator, e.g. `>=` in `>= 2.0.0`
     pub fn operator(&self) -> &Operator {
@@ -396,29 +470,66 @@ impl VersionSpecifier {
         self.version.any_prerelease()
     }
 
-    /// Whether the given version satisfies the version range
+    /// Returns the version specifiers whose union represents the given range.
+    pub fn from_bounds(
+        bounds: (&Bound<Version>, &Bound<Version>),
+    ) -> impl Iterator<Item = VersionSpecifier> {
+        let (b1, b2) = match bounds {
+            (Bound::Included(v1), Bound::Included(v2)) if v1 == v2 => {
+                (Some(VersionSpecifier::equals_version(v1.clone())), None)
+            }
+            (lower, upper) => (
+                VersionSpecifier::from_lower_bound(lower),
+                VersionSpecifier::from_upper_bound(upper),
+            ),
+        };
+
+        b1.into_iter().chain(b2)
+    }
+
+    /// Returns a version specifier representing the given lower bound.
+    pub fn from_lower_bound(bound: &Bound<Version>) -> Option<VersionSpecifier> {
+        match bound {
+            Bound::Included(version) => Some(
+                VersionSpecifier::from_version(Operator::GreaterThanEqual, version.clone())
+                    .unwrap(),
+            ),
+            Bound::Excluded(version) => Some(
+                VersionSpecifier::from_version(Operator::GreaterThan, version.clone()).unwrap(),
+            ),
+            Bound::Unbounded => None,
+        }
+    }
+
+    /// Returns a version specifier representing the given upper bound.
+    pub fn from_upper_bound(bound: &Bound<Version>) -> Option<VersionSpecifier> {
+        match bound {
+            Bound::Included(version) => Some(
+                VersionSpecifier::from_version(Operator::LessThanEqual, version.clone()).unwrap(),
+            ),
+            Bound::Excluded(version) => {
+                Some(VersionSpecifier::from_version(Operator::LessThan, version.clone()).unwrap())
+            }
+            Bound::Unbounded => None,
+        }
+    }
+
+    /// Whether the given version satisfies the version range.
     ///
-    /// e.g. `>=1.19,<2.0` and `1.21` -> true
-    /// <https://peps.python.org/pep-0440/#version-specifiers>
+    /// For example, `>=1.19,<2.0` contains `1.21`, but not `2.0`.
     ///
-    /// Unlike `pypa/packaging`, prereleases are included by default
-    ///
-    /// I'm utterly non-confident in the description in PEP 440 and apparently even pip got some
-    /// of that wrong, e.g. <https://github.com/pypa/pip/issues/9121> and
-    /// <https://github.com/pypa/pip/issues/5503>, and also i'm not sure if it produces the correct
-    /// behaviour from a user perspective
-    ///
-    /// This implementation is as close as possible to
-    /// <https://github.com/pypa/packaging/blob/e184feef1a28a5c574ec41f5c263a3a573861f5a/packaging/specifiers.py#L362-L496>
+    /// See:
+    /// - <https://peps.python.org/pep-0440/#version-specifiers>
+    /// - <https://github.com/pypa/packaging/blob/e184feef1a28a5c574ec41f5c263a3a573861f5a/packaging/specifiers.py#L362-L496>
     pub fn contains(&self, version: &Version) -> bool {
         // "Except where specifically noted below, local version identifiers MUST NOT be permitted
         // in version specifiers, and local version labels MUST be ignored entirely when checking
         // if candidate versions match a given version specifier."
-        let (this, other) = if !self.version.local().is_empty() {
-            (self.version.clone(), version.clone())
-        } else {
+        let (this, other) = if self.version.local().is_empty() {
             // self is already without local
             (self.version.clone(), version.clone().without_local())
+        } else {
+            (self.version.clone(), version.clone())
         };
 
         match self.operator {
@@ -467,7 +578,7 @@ impl VersionSpecifier {
                     return false;
                 }
 
-                // According to PEP 440, this ignores the prerelease special rules
+                // According to PEP 440, this ignores the pre-release special rules
                 // pypa/packaging disagrees: https://github.com/pypa/packaging/issues/617
                 other >= this
             }
@@ -523,6 +634,22 @@ impl VersionSpecifier {
         }
 
         other > this
+    }
+
+    /// Whether this version specifier rejects versions below a lower cutoff.
+    pub fn has_lower_bound(&self) -> bool {
+        match self.operator() {
+            Operator::Equal
+            | Operator::EqualStar
+            | Operator::ExactEqual
+            | Operator::TildeEqual
+            | Operator::GreaterThan
+            | Operator::GreaterThanEqual => true,
+            Operator::LessThanEqual
+            | Operator::LessThan
+            | Operator::NotEqualStar
+            | Operator::NotEqual => false,
+        }
     }
 }
 
@@ -584,7 +711,7 @@ impl std::fmt::Display for VersionSpecifierBuildError {
                 let local = version
                     .local()
                     .iter()
-                    .map(|segment| segment.to_string())
+                    .map(ToString::to_string)
                     .collect::<Vec<String>>()
                     .join(".");
                 write!(
@@ -733,7 +860,7 @@ mod tests {
 
     use indoc::indoc;
 
-    use crate::{LocalSegment, PreRelease, PreReleaseKind};
+    use crate::LocalSegment;
 
     use super::*;
 
@@ -1437,10 +1564,7 @@ mod tests {
                 "==2.0a1.*",
                 ParseErrorKind::InvalidVersion(
                     version::ErrorKind::UnexpectedEnd {
-                        version: Version::new([2, 0]).with_pre(Some(PreRelease {
-                            kind: PreReleaseKind::Alpha,
-                            number: 1,
-                        })),
+                        version: "2.0a1".to_string(),
                         remaining: ".*".to_string(),
                     }
                     .into(),
@@ -1451,10 +1575,7 @@ mod tests {
                 "!=2.0a1.*",
                 ParseErrorKind::InvalidVersion(
                     version::ErrorKind::UnexpectedEnd {
-                        version: Version::new([2, 0]).with_pre(Some(PreRelease {
-                            kind: PreReleaseKind::Alpha,
-                            number: 1,
-                        })),
+                        version: "2.0a1".to_string(),
                         remaining: ".*".to_string(),
                     }
                     .into(),
@@ -1465,7 +1586,7 @@ mod tests {
                 "==2.0.post1.*",
                 ParseErrorKind::InvalidVersion(
                     version::ErrorKind::UnexpectedEnd {
-                        version: Version::new([2, 0]).with_post(Some(1)),
+                        version: "2.0.post1".to_string(),
                         remaining: ".*".to_string(),
                     }
                     .into(),
@@ -1476,7 +1597,7 @@ mod tests {
                 "!=2.0.post1.*",
                 ParseErrorKind::InvalidVersion(
                     version::ErrorKind::UnexpectedEnd {
-                        version: Version::new([2, 0]).with_post(Some(1)),
+                        version: "2.0.post1".to_string(),
                         remaining: ".*".to_string(),
                     }
                     .into(),
@@ -1487,7 +1608,7 @@ mod tests {
                 "==2.0.dev1.*",
                 ParseErrorKind::InvalidVersion(
                     version::ErrorKind::UnexpectedEnd {
-                        version: Version::new([2, 0]).with_dev(Some(1)),
+                        version: "2.0.dev1".to_string(),
                         remaining: ".*".to_string(),
                     }
                     .into(),
@@ -1498,7 +1619,7 @@ mod tests {
                 "!=2.0.dev1.*",
                 ParseErrorKind::InvalidVersion(
                     version::ErrorKind::UnexpectedEnd {
-                        version: Version::new([2, 0]).with_dev(Some(1)),
+                        version: "2.0.dev1".to_string(),
                         remaining: ".*".to_string(),
                     }
                     .into(),
@@ -1537,7 +1658,7 @@ mod tests {
                 "==1.0.dev1.*",
                 ParseErrorKind::InvalidVersion(
                     version::ErrorKind::UnexpectedEnd {
-                        version: Version::new([1, 0]).with_dev(Some(1)),
+                        version: "1.0.dev1".to_string(),
                         remaining: ".*".to_string(),
                     }
                     .into(),
@@ -1548,7 +1669,7 @@ mod tests {
                 "!=1.0.dev1.*",
                 ParseErrorKind::InvalidVersion(
                     version::ErrorKind::UnexpectedEnd {
-                        version: Version::new([1, 0]).with_dev(Some(1)),
+                        version: "1.0.dev1".to_string(),
                         remaining: ".*".to_string(),
                     }
                     .into(),

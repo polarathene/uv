@@ -23,7 +23,12 @@ RequirementsTxt {
                             ),
                         ),
                     ),
-                    marker: None,
+                    marker: true,
+                    origin: Some(
+                        File(
+                            "<REQUIREMENTS_DIR>/for-poetry.txt",
+                        ),
+                    ),
                 },
             ),
             hashes: [],
@@ -47,7 +52,12 @@ RequirementsTxt {
                             ),
                         ),
                     ),
-                    marker: None,
+                    marker: true,
+                    origin: Some(
+                        File(
+                            "<REQUIREMENTS_DIR>/for-poetry.txt",
+                        ),
+                    ),
                 },
             ),
             hashes: [],
@@ -60,7 +70,12 @@ RequirementsTxt {
                     ),
                     extras: [],
                     version_or_url: None,
-                    marker: None,
+                    marker: true,
+                    origin: Some(
+                        File(
+                            "<REQUIREMENTS_DIR>/for-poetry.txt",
+                        ),
+                    ),
                 },
             ),
             hashes: [],
@@ -92,7 +107,12 @@ RequirementsTxt {
                             ),
                         ),
                     ),
-                    marker: None,
+                    marker: true,
+                    origin: Some(
+                        File(
+                            "<REQUIREMENTS_DIR>/for-poetry.txt",
+                        ),
+                    ),
                 },
             ),
             hashes: [],

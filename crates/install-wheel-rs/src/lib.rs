@@ -1,7 +1,6 @@
 //! Takes a wheel and installs it into a venv.
 
 use std::io;
-
 use std::path::PathBuf;
 
 use platform_info::PlatformInfoError;
@@ -11,9 +10,10 @@ use zip::result::ZipError;
 use pep440_rs::Version;
 use platform_tags::{Arch, Os};
 use pypi_types::Scheme;
-pub use uninstall::{uninstall_wheel, Uninstall};
+pub use uninstall::{uninstall_egg, uninstall_legacy_editable, uninstall_wheel, Uninstall};
 use uv_fs::Simplified;
 use uv_normalize::PackageName;
+pub use wheel::{parse_wheel_file, read_record_file, LibKind};
 
 pub mod linker;
 pub mod metadata;
@@ -70,7 +70,9 @@ pub enum Error {
     RecordCsv(#[from] csv::Error),
     #[error("Broken virtualenv: {0}")]
     BrokenVenv(String),
-    #[error("Unable to create Windows launch for {0} (only x64_64 is supported)")]
+    #[error(
+        "Unable to create Windows launcher for: {0} (only x86_64, x86, and arm64 are supported)"
+    )]
     UnsupportedWindowsArch(&'static str),
     #[error("Unable to create Windows launcher on non-Windows platform")]
     NotWindows,
@@ -82,8 +84,10 @@ pub enum Error {
     DirectUrlJson(#[from] serde_json::Error),
     #[error("No .dist-info directory found")]
     MissingDistInfo,
-    #[error("Cannot uninstall package; RECORD file not found at: {}", _0.user_display())]
+    #[error("Cannot uninstall package; `RECORD` file not found at: {}", _0.user_display())]
     MissingRecord(PathBuf),
+    #[error("Cannot uninstall package; `top_level.txt` file not found at: {}", _0.user_display())]
+    MissingTopLevel(PathBuf),
     #[error("Multiple .dist-info directories found: {0}")]
     MultipleDistInfo(String),
     #[error(
@@ -106,4 +110,6 @@ pub enum Error {
     MismatchedName(PackageName, PackageName),
     #[error("Wheel version does not match filename: {0} != {1}")]
     MismatchedVersion(Version, Version),
+    #[error("Invalid egg-link")]
+    InvalidEggLink(PathBuf),
 }

@@ -1,31 +1,31 @@
+use std::collections::BTreeSet;
 use std::iter::Flatten;
 use std::path::PathBuf;
-use std::{collections::BTreeSet, hash::BuildHasherDefault};
 
 use anyhow::{Context, Result};
 use fs_err as fs;
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
 use url::Url;
 
 use distribution_types::{
-    InstalledDist, Name, Requirement, UnresolvedRequirement, UnresolvedRequirementSpecification,
+    Diagnostic, InstalledDist, Name, UnresolvedRequirement, UnresolvedRequirementSpecification,
 };
 use pep440_rs::{Version, VersionSpecifiers};
-use requirements_txt::EditableRequirement;
-use uv_cache::{ArchiveTarget, ArchiveTimestamp};
-use uv_interpreter::PythonEnvironment;
+use pypi_types::{Requirement, VerbatimParsedUrl};
+use uv_fs::Simplified;
 use uv_normalize::PackageName;
+use uv_python::{Interpreter, PythonEnvironment};
 use uv_types::InstalledPackagesProvider;
+use uv_warnings::warn_user;
 
-use crate::is_dynamic;
 use crate::satisfies::RequirementSatisfaction;
 
 /// An index over the packages installed in an environment.
 ///
 /// Packages are indexed by both name and (for editable installs) URL.
-#[derive(Debug)]
-pub struct SitePackages<'a> {
-    venv: &'a PythonEnvironment,
+#[derive(Debug, Clone)]
+pub struct SitePackages {
+    interpreter: Interpreter,
     /// The vector of all installed distributions. The `by_name` and `by_url` indices index into
     /// this vector. The vector may contain `None` values, which represent distributions that were
     /// removed from the virtual environment.
@@ -38,32 +38,42 @@ pub struct SitePackages<'a> {
     by_url: FxHashMap<Url, Vec<usize>>,
 }
 
-impl<'a> SitePackages<'a> {
+impl SitePackages {
+    /// Build an index of installed packages from the given Python environment.
+    pub fn from_environment(environment: &PythonEnvironment) -> Result<Self> {
+        Self::from_interpreter(environment.interpreter())
+    }
+
     /// Build an index of installed packages from the given Python executable.
-    pub fn from_executable(venv: &'a PythonEnvironment) -> Result<SitePackages<'a>> {
+    pub fn from_interpreter(interpreter: &Interpreter) -> Result<Self> {
         let mut distributions: Vec<Option<InstalledDist>> = Vec::new();
         let mut by_name = FxHashMap::default();
         let mut by_url = FxHashMap::default();
 
-        for site_packages in venv.site_packages() {
+        for site_packages in interpreter.site_packages() {
             // Read the site-packages directory.
             let site_packages = match fs::read_dir(site_packages) {
                 Ok(site_packages) => {
                     // Collect sorted directory paths; `read_dir` is not stable across platforms
-                    let directories: BTreeSet<_> = site_packages
+                    let dist_likes: BTreeSet<_> = site_packages
                         .filter_map(|read_dir| match read_dir {
                             Ok(entry) => match entry.file_type() {
-                                Ok(file_type) => file_type.is_dir().then_some(Ok(entry.path())),
+                                Ok(file_type) => (file_type.is_dir()
+                                    || entry
+                                        .path()
+                                        .extension()
+                                        .is_some_and(|ext| ext == "egg-link" || ext == "egg-info"))
+                                .then_some(Ok(entry.path())),
                                 Err(err) => Some(Err(err)),
                             },
                             Err(err) => Some(Err(err)),
                         })
                         .collect::<Result<_, std::io::Error>>()?;
-                    directories
+                    dist_likes
                 }
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                     return Ok(Self {
-                        venv,
+                        interpreter: interpreter.clone(),
                         distributions,
                         by_name,
                         by_url,
@@ -74,10 +84,26 @@ impl<'a> SitePackages<'a> {
 
             // Index all installed packages by name.
             for path in site_packages {
-                let Some(dist_info) = InstalledDist::try_from_path(&path)
-                    .with_context(|| format!("Failed to read metadata: from {}", path.display()))?
-                else {
-                    continue;
+                let dist_info = match InstalledDist::try_from_path(&path) {
+                    Ok(Some(dist_info)) => dist_info,
+                    Ok(None) => continue,
+                    Err(_)
+                        if path.file_name().is_some_and(|name| {
+                            name.to_str().is_some_and(|name| name.starts_with('~'))
+                        }) =>
+                    {
+                        warn_user!(
+                            "Ignoring dangling temporary directory: `{}`",
+                            path.simplified_display().cyan()
+                        );
+                        continue;
+                    }
+                    Err(err) => {
+                        return Err(err).context(format!(
+                            "Failed to read metadata from: `{}`",
+                            path.simplified_display()
+                        ));
+                    }
                 };
 
                 let idx = distributions.len();
@@ -85,15 +111,12 @@ impl<'a> SitePackages<'a> {
                 // Index the distribution by name.
                 by_name
                     .entry(dist_info.name().clone())
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(idx);
 
                 // Index the distribution by URL.
                 if let InstalledDist::Url(dist) = &dist_info {
-                    by_url
-                        .entry(dist.url.clone())
-                        .or_insert_with(Vec::new)
-                        .push(idx);
+                    by_url.entry(dist.url.clone()).or_default().push(idx);
                 }
 
                 // Add the distribution to the database.
@@ -102,11 +125,16 @@ impl<'a> SitePackages<'a> {
         }
 
         Ok(Self {
-            venv,
+            interpreter: interpreter.clone(),
             distributions,
             by_name,
             by_url,
         })
+    }
+
+    /// Returns the [`Interpreter`] used to install the packages.
+    pub fn interpreter(&self) -> &Interpreter {
+        &self.interpreter
     }
 
     /// Returns an iterator over the installed distributions.
@@ -147,43 +175,13 @@ impl<'a> SitePackages<'a> {
             .collect()
     }
 
-    /// Returns the editable distribution installed from the given URL, if any.
-    pub fn get_editables(&self, url: &Url) -> Vec<&InstalledDist> {
-        let Some(indexes) = self.by_url.get(url) else {
-            return Vec::new();
-        };
-        indexes
-            .iter()
-            .flat_map(|&index| &self.distributions[index])
-            .filter(|dist| dist.is_editable())
-            .collect()
-    }
-
-    /// Remove the editable distribution installed from the given URL, if any.
-    pub fn remove_editables(&mut self, url: &Url) -> Vec<InstalledDist> {
-        let Some(indexes) = self.by_url.get(url) else {
-            return Vec::new();
-        };
-        indexes
-            .iter()
-            .filter_map(|index| {
-                let dist = &mut self.distributions[*index];
-                if dist.as_ref().is_some_and(InstalledDist::is_editable) {
-                    std::mem::take(dist)
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
-
     /// Returns `true` if there are any installed packages.
     pub fn any(&self) -> bool {
         self.distributions.iter().any(Option::is_some)
     }
 
     /// Validate the installed packages in the virtual environment.
-    pub fn diagnostics(&self) -> Result<Vec<Diagnostic>> {
+    pub fn diagnostics(&self) -> Result<Vec<SitePackagesDiagnostic>> {
         let mut diagnostics = Vec::new();
 
         for (package, indexes) in &self.by_name {
@@ -196,7 +194,7 @@ impl<'a> SitePackages<'a> {
 
             if let Some(conflict) = distributions.next() {
                 // There are multiple installed distributions for the same package.
-                diagnostics.push(Diagnostic::DuplicatePackage {
+                diagnostics.push(SitePackagesDiagnostic::DuplicatePackage {
                     package: package.clone(),
                     paths: std::iter::once(distribution.path().to_owned())
                         .chain(std::iter::once(conflict.path().to_owned()))
@@ -213,7 +211,7 @@ impl<'a> SitePackages<'a> {
 
                 // Determine the dependencies for the given package.
                 let Ok(metadata) = distribution.metadata() else {
-                    diagnostics.push(Diagnostic::IncompletePackage {
+                    diagnostics.push(SitePackagesDiagnostic::IncompletePackage {
                         package: package.clone(),
                         path: distribution.path().to_owned(),
                     });
@@ -222,10 +220,10 @@ impl<'a> SitePackages<'a> {
 
                 // Verify that the package is compatible with the current Python version.
                 if let Some(requires_python) = metadata.requires_python.as_ref() {
-                    if !requires_python.contains(self.venv.interpreter().python_version()) {
-                        diagnostics.push(Diagnostic::IncompatiblePythonVersion {
+                    if !requires_python.contains(self.interpreter.python_version()) {
+                        diagnostics.push(SitePackagesDiagnostic::IncompatiblePythonVersion {
                             package: package.clone(),
-                            version: self.venv.interpreter().python_version().clone(),
+                            version: self.interpreter.python_version().clone(),
                             requires_python: requires_python.clone(),
                         });
                     }
@@ -233,7 +231,7 @@ impl<'a> SitePackages<'a> {
 
                 // Verify that the dependencies are installed.
                 for dependency in &metadata.requires_dist {
-                    if !dependency.evaluate_markers(self.venv.interpreter().markers(), &[]) {
+                    if !dependency.evaluate_markers(self.interpreter.markers(), &[]) {
                         continue;
                     }
 
@@ -241,7 +239,7 @@ impl<'a> SitePackages<'a> {
                     match installed.as_slice() {
                         [] => {
                             // No version installed.
-                            diagnostics.push(Diagnostic::MissingDependency {
+                            diagnostics.push(SitePackagesDiagnostic::MissingDependency {
                                 package: package.clone(),
                                 requirement: dependency.clone(),
                             });
@@ -256,11 +254,13 @@ impl<'a> SitePackages<'a> {
                                 )) => {
                                     // The installed version doesn't satisfy the requirement.
                                     if !version_specifier.contains(installed.version()) {
-                                        diagnostics.push(Diagnostic::IncompatibleDependency {
-                                            package: package.clone(),
-                                            version: installed.version().clone(),
-                                            requirement: dependency.clone(),
-                                        });
+                                        diagnostics.push(
+                                            SitePackagesDiagnostic::IncompatibleDependency {
+                                                package: package.clone(),
+                                                version: installed.version().clone(),
+                                                requirement: dependency.clone(),
+                                            },
+                                        );
                                     }
                                 }
                             }
@@ -280,73 +280,31 @@ impl<'a> SitePackages<'a> {
     pub fn satisfies(
         &self,
         requirements: &[UnresolvedRequirementSpecification],
-        editables: &[EditableRequirement],
         constraints: &[Requirement],
     ) -> Result<SatisfiesResult> {
+        // Collect the constraints.
+        let constraints: FxHashMap<&PackageName, Vec<&Requirement>> =
+            constraints
+                .iter()
+                .fold(FxHashMap::default(), |mut constraints, requirement| {
+                    constraints
+                        .entry(&requirement.name)
+                        .or_default()
+                        .push(requirement);
+                    constraints
+                });
+
         let mut stack = Vec::with_capacity(requirements.len());
-        let mut seen =
-            FxHashSet::with_capacity_and_hasher(requirements.len(), BuildHasherDefault::default());
+        let mut seen = FxHashSet::with_capacity_and_hasher(requirements.len(), FxBuildHasher);
 
         // Add the direct requirements to the queue.
         for entry in requirements {
             if entry
                 .requirement
-                .evaluate_markers(self.venv.interpreter().markers(), &[])
+                .evaluate_markers(Some(self.interpreter.markers()), &[])
             {
                 if seen.insert(entry.clone()) {
                     stack.push(entry.clone());
-                }
-            }
-        }
-
-        // Verify that all editable requirements are met.
-        for requirement in editables {
-            let installed = self.get_editables(requirement.raw());
-            match installed.as_slice() {
-                [] => {
-                    // The package isn't installed.
-                    return Ok(SatisfiesResult::Unsatisfied(requirement.to_string()));
-                }
-                [distribution] => {
-                    // Is the editable out-of-date?
-                    if !ArchiveTimestamp::up_to_date_with(
-                        &requirement.path,
-                        ArchiveTarget::Install(distribution),
-                    )? {
-                        return Ok(SatisfiesResult::Unsatisfied(requirement.to_string()));
-                    }
-
-                    // Does the editable have dynamic metadata?
-                    if is_dynamic(requirement) {
-                        return Ok(SatisfiesResult::Unsatisfied(requirement.to_string()));
-                    }
-
-                    // Recurse into the dependencies.
-                    let metadata = distribution
-                        .metadata()
-                        .with_context(|| format!("Failed to read metadata for: {distribution}"))?;
-
-                    // Add the dependencies to the queue.
-                    for dependency in metadata.requires_dist {
-                        if dependency.evaluate_markers(
-                            self.venv.interpreter().markers(),
-                            &requirement.extras,
-                        ) {
-                            let dependency = UnresolvedRequirementSpecification {
-                                requirement: UnresolvedRequirement::Named(
-                                    Requirement::from_pep508(dependency)?,
-                                ),
-                                hashes: vec![],
-                            };
-                            if seen.insert(dependency.clone()) {
-                                stack.push(dependency);
-                            }
-                        }
-                    }
-                }
-                _ => {
-                    // There are multiple installed distributions for the same package.
-                    return Ok(SatisfiesResult::Unsatisfied(requirement.to_string()));
                 }
             }
         }
@@ -355,7 +313,9 @@ impl<'a> SitePackages<'a> {
         while let Some(entry) = stack.pop() {
             let installed = match &entry.requirement {
                 UnresolvedRequirement::Named(requirement) => self.get_packages(&requirement.name),
-                UnresolvedRequirement::Unnamed(requirement) => self.get_urls(requirement.url.raw()),
+                UnresolvedRequirement::Unnamed(requirement) => {
+                    self.get_urls(requirement.url.verbatim.raw())
+                }
             };
             match installed.as_slice() {
                 [] => {
@@ -365,15 +325,16 @@ impl<'a> SitePackages<'a> {
                 [distribution] => {
                     match RequirementSatisfaction::check(
                         distribution,
-                        &entry.requirement.source()?,
+                        entry.requirement.source().as_ref(),
                     )? {
                         RequirementSatisfaction::Mismatch | RequirementSatisfaction::OutOfDate => {
                             return Ok(SatisfiesResult::Unsatisfied(entry.requirement.to_string()))
                         }
                         RequirementSatisfaction::Satisfied => {}
                     }
+
                     // Validate that the installed version satisfies the constraints.
-                    for constraint in constraints {
+                    for constraint in constraints.get(&distribution.name()).into_iter().flatten() {
                         match RequirementSatisfaction::check(distribution, &constraint.source)? {
                             RequirementSatisfaction::Mismatch
                             | RequirementSatisfaction::OutOfDate => {
@@ -393,13 +354,13 @@ impl<'a> SitePackages<'a> {
                     // Add the dependencies to the queue.
                     for dependency in metadata.requires_dist {
                         if dependency.evaluate_markers(
-                            self.venv.interpreter().markers(),
+                            self.interpreter.markers(),
                             entry.requirement.extras(),
                         ) {
                             let dependency = UnresolvedRequirementSpecification {
-                                requirement: UnresolvedRequirement::Named(
-                                    Requirement::from_pep508(dependency)?,
-                                ),
+                                requirement: UnresolvedRequirement::Named(Requirement::from(
+                                    dependency,
+                                )),
                                 hashes: vec![],
                             };
                             if seen.insert(dependency.clone()) {
@@ -434,7 +395,7 @@ pub enum SatisfiesResult {
     Unsatisfied(String),
 }
 
-impl IntoIterator for SitePackages<'_> {
+impl IntoIterator for SitePackages {
     type Item = InstalledDist;
     type IntoIter = Flatten<std::vec::IntoIter<Option<InstalledDist>>>;
 
@@ -444,7 +405,7 @@ impl IntoIterator for SitePackages<'_> {
 }
 
 #[derive(Debug)]
-pub enum Diagnostic {
+pub enum SitePackagesDiagnostic {
     IncompletePackage {
         /// The package that is missing metadata.
         package: PackageName,
@@ -463,7 +424,7 @@ pub enum Diagnostic {
         /// The package that is missing a dependency.
         package: PackageName,
         /// The dependency that is missing.
-        requirement: pep508_rs::Requirement,
+        requirement: pep508_rs::Requirement<VerbatimParsedUrl>,
     },
     IncompatibleDependency {
         /// The package that has an incompatible dependency.
@@ -471,7 +432,7 @@ pub enum Diagnostic {
         /// The version of the package that is installed.
         version: Version,
         /// The dependency that is incompatible.
-        requirement: pep508_rs::Requirement,
+        requirement: pep508_rs::Requirement<VerbatimParsedUrl>,
     },
     DuplicatePackage {
         /// The package that has multiple installed distributions.
@@ -481,9 +442,9 @@ pub enum Diagnostic {
     },
 }
 
-impl Diagnostic {
+impl Diagnostic for SitePackagesDiagnostic {
     /// Convert the diagnostic into a user-facing message.
-    pub fn message(&self) -> String {
+    fn message(&self) -> String {
         match self {
             Self::IncompletePackage { package, path } => format!(
                 "The package `{package}` is broken or incomplete (unable to read `METADATA`). Consider recreating the virtualenv, or removing the package directory at: {}.", path.display(),
@@ -493,26 +454,26 @@ impl Diagnostic {
                 version,
                 requires_python,
             } => format!(
-                "The package `{package}` requires Python {requires_python}, but `{version}` is installed."
+                "The package `{package}` requires Python {requires_python}, but `{version}` is installed"
             ),
             Self::MissingDependency {
                 package,
                 requirement,
             } => {
-                format!("The package `{package}` requires `{requirement}`, but it's not installed.")
+                format!("The package `{package}` requires `{requirement}`, but it's not installed")
             }
             Self::IncompatibleDependency {
                 package,
                 version,
                 requirement,
             } => format!(
-                "The package `{package}` requires `{requirement}`, but `{version}` is installed."
+                "The package `{package}` requires `{requirement}`, but `{version}` is installed"
             ),
             Self::DuplicatePackage { package, paths } => {
                 let mut paths = paths.clone();
                 paths.sort();
                 format!(
-                    "The package `{package}` has multiple installed distributions:{}",
+                    "The package `{package}` has multiple installed distributions: {}",
                     paths.iter().fold(String::new(), |acc, path| acc + &format!("\n  - {}", path.display()))
                 )
             }
@@ -520,7 +481,7 @@ impl Diagnostic {
     }
 
     /// Returns `true` if the [`PackageName`] is involved in this diagnostic.
-    pub fn includes(&self, name: &PackageName) -> bool {
+    fn includes(&self, name: &PackageName) -> bool {
         match self {
             Self::IncompletePackage { package, .. } => name == package,
             Self::IncompatiblePythonVersion { package, .. } => name == package,
@@ -535,7 +496,7 @@ impl Diagnostic {
     }
 }
 
-impl InstalledPackagesProvider for SitePackages<'_> {
+impl InstalledPackagesProvider for SitePackages {
     fn iter(&self) -> impl Iterator<Item = &InstalledDist> {
         self.iter()
     }

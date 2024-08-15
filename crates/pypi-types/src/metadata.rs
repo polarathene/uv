@@ -3,6 +3,7 @@
 use std::str::FromStr;
 
 use indexmap::IndexMap;
+use itertools::Itertools;
 use mailparse::{MailHeaderMap, MailParseError};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -13,7 +14,7 @@ use pep508_rs::{Pep508Error, Requirement};
 use uv_normalize::{ExtraName, InvalidNameError, PackageName};
 
 use crate::lenient_requirement::LenientRequirement;
-use crate::LenientVersionSpecifiers;
+use crate::{LenientVersionSpecifiers, VerbatimParsedUrl};
 
 /// Python Package Metadata 2.3 as specified in
 /// <https://packaging.python.org/specifications/core-metadata/>.
@@ -29,7 +30,7 @@ pub struct Metadata23 {
     pub name: PackageName,
     pub version: Version,
     // Optional fields
-    pub requires_dist: Vec<Requirement>,
+    pub requires_dist: Vec<Requirement<VerbatimParsedUrl>>,
     pub requires_python: Option<VersionSpecifiers>,
     pub provides_extras: Vec<ExtraName>,
 }
@@ -50,7 +51,7 @@ pub enum MetadataError {
     #[error(transparent)]
     Pep440Error(#[from] VersionSpecifiersParseError),
     #[error(transparent)]
-    Pep508Error(#[from] Pep508Error),
+    Pep508Error(#[from] Box<Pep508Error<VerbatimParsedUrl>>),
     #[error(transparent)]
     InvalidName(#[from] InvalidNameError),
     #[error("Invalid `Metadata-Version` field: {0}")]
@@ -59,6 +60,14 @@ pub enum MetadataError {
     UnsupportedMetadataVersion(String),
     #[error("The following field was marked as dynamic: {0}")]
     DynamicField(&'static str),
+    #[error("The project uses Poetry's syntax to declare its dependencies, despite including a `project` table in `pyproject.toml`")]
+    PoetrySyntax,
+}
+
+impl From<Pep508Error<VerbatimParsedUrl>> for MetadataError {
+    fn from(error: Pep508Error<VerbatimParsedUrl>) -> Self {
+        Self::Pep508Error(Box::new(error))
+    }
 }
 
 /// From <https://github.com/PyO3/python-pkginfo-rs/blob/d719988323a0cfea86d4737116d7917f30e819e2/src/metadata.rs#LL78C2-L91C26>
@@ -80,16 +89,14 @@ impl Metadata23 {
         .map_err(MetadataError::Pep440VersionError)?;
         let requires_dist = headers
             .get_all_values("Requires-Dist")
-            .map(|requires_dist| {
-                LenientRequirement::from_str(&requires_dist).map(Requirement::from)
-            })
+            .map(|requires_dist| LenientRequirement::from_str(&requires_dist))
+            .map_ok(Requirement::from)
             .collect::<Result<Vec<_>, _>>()?;
         let requires_python = headers
             .get_first_value("Requires-Python")
-            .map(|requires_python| {
-                LenientVersionSpecifiers::from_str(&requires_python).map(VersionSpecifiers::from)
-            })
-            .transpose()?;
+            .map(|requires_python| LenientVersionSpecifiers::from_str(&requires_python))
+            .transpose()?
+            .map(VersionSpecifiers::from);
         let provides_extras = headers
             .get_all_values("Provides-Extra")
             .filter_map(|provides_extra| match ExtraName::new(provides_extra) {
@@ -155,16 +162,14 @@ impl Metadata23 {
         // The remaining fields are required to be present.
         let requires_dist = headers
             .get_all_values("Requires-Dist")
-            .map(|requires_dist| {
-                LenientRequirement::from_str(&requires_dist).map(Requirement::from)
-            })
+            .map(|requires_dist| LenientRequirement::from_str(&requires_dist))
+            .map_ok(Requirement::from)
             .collect::<Result<Vec<_>, _>>()?;
         let requires_python = headers
             .get_first_value("Requires-Python")
-            .map(|requires_python| {
-                LenientVersionSpecifiers::from_str(&requires_python).map(VersionSpecifiers::from)
-            })
-            .transpose()?;
+            .map(|requires_python| LenientVersionSpecifiers::from_str(&requires_python))
+            .transpose()?
+            .map(VersionSpecifiers::from);
         let provides_extras = headers
             .get_all_values("Provides-Extra")
             .filter_map(|provides_extra| match ExtraName::new(provides_extra) {
@@ -207,19 +212,36 @@ impl Metadata23 {
             }
         }
 
+        // If dependencies are declared with Poetry, and `project.dependencies` is omitted, treat
+        // the dependencies as dynamic. The inclusion of a `project` table without defining
+        // `project.dependencies` is almost certainly an error.
+        if project.dependencies.is_none()
+            && pyproject_toml.tool.and_then(|tool| tool.poetry).is_some()
+        {
+            return Err(MetadataError::PoetrySyntax);
+        }
+
         let name = project.name;
         let version = project
             .version
             .ok_or(MetadataError::FieldNotFound("version"))?;
-        let requires_python = project.requires_python.map(VersionSpecifiers::from);
+
+        // Parse the Python version requirements.
+        let requires_python = project
+            .requires_python
+            .map(|requires_python| {
+                LenientVersionSpecifiers::from_str(&requires_python).map(VersionSpecifiers::from)
+            })
+            .transpose()?;
 
         // Extract the requirements.
         let mut requires_dist = project
             .dependencies
             .unwrap_or_default()
             .into_iter()
-            .map(Requirement::from)
-            .collect::<Vec<_>>();
+            .map(|requires_dist| LenientRequirement::from_str(&requires_dist))
+            .map_ok(Requirement::from)
+            .collect::<Result<Vec<_>, _>>()?;
 
         // Extract the optional dependencies.
         let mut provides_extras: Vec<ExtraName> = Vec::new();
@@ -227,9 +249,10 @@ impl Metadata23 {
             requires_dist.extend(
                 requirements
                     .into_iter()
-                    .map(Requirement::from)
-                    .map(|requirement| requirement.with_extra_marker(&extra))
-                    .collect::<Vec<_>>(),
+                    .map(|requires_dist| LenientRequirement::from_str(&requires_dist))
+                    .map_ok(Requirement::from)
+                    .map_ok(|requirement| requirement.with_extra_marker(&extra))
+                    .collect::<Result<Vec<_>, _>>()?,
             );
             provides_extras.push(extra);
         }
@@ -245,11 +268,11 @@ impl Metadata23 {
 }
 
 /// A `pyproject.toml` as specified in PEP 517.
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Debug)]
 #[serde(rename_all = "kebab-case")]
-pub(crate) struct PyProjectToml {
-    /// Project metadata
-    pub(crate) project: Option<Project>,
+struct PyProjectToml {
+    project: Option<Project>,
+    tool: Option<Tool>,
 }
 
 /// PEP 621 project metadata.
@@ -258,23 +281,34 @@ pub(crate) struct PyProjectToml {
 /// relevant for dependency resolution.
 ///
 /// See <https://packaging.python.org/en/latest/specifications/pyproject-toml>.
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Debug)]
 #[serde(rename_all = "kebab-case")]
-pub(crate) struct Project {
+struct Project {
     /// The name of the project
-    pub(crate) name: PackageName,
+    name: PackageName,
     /// The version of the project as supported by PEP 440
-    pub(crate) version: Option<Version>,
+    version: Option<Version>,
     /// The Python version requirements of the project
-    pub(crate) requires_python: Option<LenientVersionSpecifiers>,
+    requires_python: Option<String>,
     /// Project dependencies
-    pub(crate) dependencies: Option<Vec<LenientRequirement>>,
+    dependencies: Option<Vec<String>>,
     /// Optional dependencies
-    pub(crate) optional_dependencies: Option<IndexMap<ExtraName, Vec<LenientRequirement>>>,
+    optional_dependencies: Option<IndexMap<ExtraName, Vec<String>>>,
     /// Specifies which fields listed by PEP 621 were intentionally unspecified
     /// so another tool can/will provide such metadata dynamically.
-    pub(crate) dynamic: Option<Vec<String>>,
+    dynamic: Option<Vec<String>>,
 }
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "kebab-case")]
+struct Tool {
+    poetry: Option<ToolPoetry>,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "kebab-case")]
+#[allow(clippy::empty_structs_with_brackets)]
+struct ToolPoetry {}
 
 /// Python Package Metadata 1.0 and later as specified in
 /// <https://peps.python.org/pep-0241/>.
@@ -285,6 +319,7 @@ pub(crate) struct Project {
 #[serde(rename_all = "kebab-case")]
 pub struct Metadata10 {
     pub name: PackageName,
+    pub version: String,
 }
 
 impl Metadata10 {
@@ -296,7 +331,69 @@ impl Metadata10 {
                 .get_first_value("Name")
                 .ok_or(MetadataError::FieldNotFound("Name"))?,
         )?;
-        Ok(Self { name })
+        let version = headers
+            .get_first_value("Version")
+            .ok_or(MetadataError::FieldNotFound("Version"))?;
+        Ok(Self { name, version })
+    }
+}
+
+/// Python Package Metadata 1.2 and later as specified in
+/// <https://peps.python.org/pep-0345/>.
+///
+/// This is a subset of the full metadata specification, and only includes the
+/// fields that have been consistent across all versions of the specification later than 1.2.
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct Metadata12 {
+    pub name: PackageName,
+    pub version: Version,
+    pub requires_python: Option<VersionSpecifiers>,
+}
+
+impl Metadata12 {
+    /// Parse the [`Metadata12`] from a `.dist-info` `METADATA` file, as included in a built
+    /// distribution.
+    pub fn parse_metadata(content: &[u8]) -> Result<Self, MetadataError> {
+        let headers = Headers::parse(content)?;
+
+        // To rely on a source distribution's `PKG-INFO` file, the `Metadata-Version` field must be
+        // present and set to a value of at least `2.2`.
+        let metadata_version = headers
+            .get_first_value("Metadata-Version")
+            .ok_or(MetadataError::FieldNotFound("Metadata-Version"))?;
+
+        // Parse the version into (major, minor).
+        let (major, minor) = parse_version(&metadata_version)?;
+
+        // At time of writing:
+        // > Version of the file format; legal values are “1.0”, “1.1”, “1.2”, “2.1”, “2.2”, and “2.3”.
+        if (major, minor) < (1, 0) || (major, minor) >= (3, 0) {
+            return Err(MetadataError::InvalidMetadataVersion(metadata_version));
+        }
+
+        let name = PackageName::new(
+            headers
+                .get_first_value("Name")
+                .ok_or(MetadataError::FieldNotFound("Name"))?,
+        )?;
+        let version = Version::from_str(
+            &headers
+                .get_first_value("Version")
+                .ok_or(MetadataError::FieldNotFound("Version"))?,
+        )
+        .map_err(MetadataError::Pep440VersionError)?;
+        let requires_python = headers
+            .get_first_value("Requires-Python")
+            .map(|requires_python| LenientVersionSpecifiers::from_str(&requires_python))
+            .transpose()?
+            .map(VersionSpecifiers::from);
+
+        Ok(Self {
+            name,
+            version,
+            requires_python,
+        })
     }
 }
 
@@ -315,6 +412,84 @@ fn parse_version(metadata_version: &str) -> Result<(u8, u8), MetadataError> {
         .parse::<u8>()
         .map_err(|_| MetadataError::InvalidMetadataVersion(metadata_version.to_string()))?;
     Ok((major, minor))
+}
+
+/// Python Package Metadata 2.3 as specified in
+/// <https://packaging.python.org/specifications/core-metadata/>.
+///
+/// This is a subset of [`Metadata23`]; specifically, it omits the `version` and `requires-python`
+/// fields, which aren't necessary when extracting the requirements of a package without installing
+/// the package itself.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct RequiresDist {
+    pub name: PackageName,
+    pub requires_dist: Vec<Requirement<VerbatimParsedUrl>>,
+    pub provides_extras: Vec<ExtraName>,
+}
+
+impl RequiresDist {
+    /// Extract the [`RequiresDist`] from a `pyproject.toml` file, as specified in PEP 621.
+    pub fn parse_pyproject_toml(contents: &str) -> Result<Self, MetadataError> {
+        let pyproject_toml: PyProjectToml = toml::from_str(contents)?;
+
+        let project = pyproject_toml
+            .project
+            .ok_or(MetadataError::FieldNotFound("project"))?;
+
+        // If any of the fields we need were declared as dynamic, we can't use the `pyproject.toml`
+        // file.
+        let dynamic = project.dynamic.unwrap_or_default();
+        for field in dynamic {
+            match field.as_str() {
+                "dependencies" => return Err(MetadataError::DynamicField("dependencies")),
+                "optional-dependencies" => {
+                    return Err(MetadataError::DynamicField("optional-dependencies"))
+                }
+                _ => (),
+            }
+        }
+
+        // If dependencies are declared with Poetry, and `project.dependencies` is omitted, treat
+        // the dependencies as dynamic. The inclusion of a `project` table without defining
+        // `project.dependencies` is almost certainly an error.
+        if project.dependencies.is_none()
+            && pyproject_toml.tool.and_then(|tool| tool.poetry).is_some()
+        {
+            return Err(MetadataError::PoetrySyntax);
+        }
+
+        let name = project.name;
+
+        // Extract the requirements.
+        let mut requires_dist = project
+            .dependencies
+            .unwrap_or_default()
+            .into_iter()
+            .map(|requires_dist| LenientRequirement::from_str(&requires_dist))
+            .map_ok(Requirement::from)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        // Extract the optional dependencies.
+        let mut provides_extras: Vec<ExtraName> = Vec::new();
+        for (extra, requirements) in project.optional_dependencies.unwrap_or_default() {
+            requires_dist.extend(
+                requirements
+                    .into_iter()
+                    .map(|requires_dist| LenientRequirement::from_str(&requires_dist))
+                    .map_ok(Requirement::from)
+                    .map_ok(|requirement| requirement.with_extra_marker(&extra))
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
+            provides_extras.push(extra);
+        }
+
+        Ok(Self {
+            name,
+            requires_dist,
+            provides_extras,
+        })
+    }
 }
 
 /// The headers of a distribution metadata file.
